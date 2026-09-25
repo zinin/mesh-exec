@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Presence contract for the Grok-host Claude CLI wrappers (spec §4).
+# Contract for the mesh-exec wrapper agents and exec skills.
 #
-# claude-code-reviewer / claude-executor dispatch official `claude -p` via
-# ext-claude-exec HOST_CLAUDE=1. Catalog aliases (opus, fable), no tooling
-# constraint, run dirs under runs/claude/. Task 6 appends dual-path asserts
-# for all ten wrappers; this file starts with the three new paths only so
-# Test 6 in test-command-sync.sh stays grok-specific.
+# claude-executor dispatches official `claude -p` via ext-claude-exec HOST_CLAUDE=1:
+# catalog aliases (opus, fable), run dirs under runs/claude/. The reviewer half of
+# this file moved to the mesh-review plugin together with the reviewers.
 set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$TESTS_DIR/../../.." && pwd)"
@@ -36,28 +34,18 @@ assert_ge() {
     fi
 }
 
-echo "=== Test: claude CLI reviewer, executor, review skill ==="
-assert_eq "reviewer agent exists" "1" "$([ -f "$REPO/agents/claude-code-reviewer.md" ] && echo 1 || echo 0)"
+echo "=== Test: claude CLI executor ==="
 assert_eq "executor agent exists" "1" "$([ -f "$REPO/agents/claude-executor.md" ] && echo 1 || echo 0)"
-assert_eq "review skill exists" "1" "$([ -f "$REPO/skills/claude-code-review/SKILL.md" ] && echo 1 || echo 0)"
-assert_eq "reviewer does not STOP when MODEL is omitted" "0" \
-    "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-code-reviewer.md")"
 assert_eq "executor does not STOP when MODEL is omitted" "0" \
     "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-executor.md")"
-assert_ge "reviewer still invokes skill when MODEL omitted" "1" \
-    "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-code-reviewer.md")"
 assert_ge "executor still invokes skill when MODEL omitted" "1" \
     "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-executor.md")"
-assert_ge "reviewer names HOST_CLAUDE" "1" \
-    "$(grep -c 'HOST_CLAUDE=1' "$REPO/skills/claude-code-review/SKILL.md")"
-assert_eq "review skill has no tooling-constraint section" "0" \
-    "$(grep -c '## Tooling constraint' "$REPO/skills/claude-code-review/SKILL.md")"
 
 echo ""
 echo "=== Test: wrapper dual-path invoke + Grok wait ==="
 AGENTS="$REPO/agents"
-# 8 pre-existing wrappers; claude-* already have the paragraph from Task 5.
-WRAPPERS="codex-code-reviewer.md codex-executor.md gemini-code-reviewer.md gemini-executor.md grok-code-reviewer.md grok-executor.md ext-claude-code-reviewer.md ext-claude-executor.md claude-code-reviewer.md claude-executor.md"
+# The five executor wrappers; the reviewer wrappers are checked in mesh-review.
+WRAPPERS="codex-executor.md gemini-executor.md grok-executor.md ext-claude-executor.md claude-executor.md"
 forbid=0
 for f in $WRAPPERS; do
     grep -q 'Do NOT read SKILL.md' "$AGENTS/$f" && forbid=$((forbid+1))
@@ -75,7 +63,7 @@ echo "=== Test: empty-SKILL_BASE else-branch is in the fence ==="
 # Prose telling the LLM to rewrite is not enough: the executable fence must
 # contain the find fallback. Every resolve-plugin-root.sh call via $SKILL_BASE
 # must sit in `if [ -n "$SKILL_BASE" ]`.
-SKILLS_WITH_RESOLVER="claude-code-review ext-claude-exec ext-claude-code-review codex-exec codex-code-review gemini-exec gemini-code-review grok-exec grok-code-review mesh-design-review"
+SKILLS_WITH_RESOLVER="ext-claude-exec codex-exec gemini-exec grok-exec"
 mismatch=0
 for s in $SKILLS_WITH_RESOLVER; do
     f="$REPO/skills/$s/SKILL.md"
@@ -112,26 +100,6 @@ assert_ge "HOST_CLAUDE path rejects :/@ before mkdir" "1" \
 assert_ge "session stamp falls back to GROK_SESSION_ID" "1" \
     "$(grep -c 'GROK_SESSION_ID' "$REPO/skills/ext-claude-exec/SKILL.md")"
 
-echo ""
-echo "=== Test: Grok Read of *-exec searches installed-plugins first ==="
-# Agent defs already find review SKILL.md under installed-plugins. The next hop —
-# review skill → exec SKILL.md — still opened ~/.claude/plugins first (measured
-# 2026-09-01: cache 0.12.0 has no HOST_CLAUDE). The no-Skill-tool paragraph must
-# name installed-plugins before .claude/plugins.
-REVIEW_SKILLS="claude-code-review ext-claude-code-review codex-code-review gemini-code-review grok-code-review"
-read_stale=0
-for s in $REVIEW_SKILLS; do
-    f="$REPO/skills/$s/SKILL.md"
-    para="$(awk '/If this host has no Skill tool/,/Following the skill/' "$f")"
-    # Byte offset, not line number: all three finds live on one continuation line.
-    inst_pos=$(printf '%s' "$para" | grep -bo 'installed-plugins' | head -1 | cut -d: -f1)
-    claude_pos=$(printf '%s' "$para" | grep -bo '\.claude/plugins' | head -1 | cut -d: -f1)
-    if [ -z "$inst_pos" ] || [ -z "$claude_pos" ] || [ "$inst_pos" -ge "$claude_pos" ]; then
-        read_stale=$((read_stale+1))
-        echo "    stale $s: installed-plugins pos=${inst_pos:-none} .claude pos=${claude_pos:-none}"
-    fi
-done
-assert_eq "every review→exec Read searches installed-plugins before .claude/plugins" "0" "$read_stale"
 
 echo ""
 echo "=== Test: ext-claude-exec launch fences re-check MODEL / HOST_CLAUDE against Step 1 ==="
@@ -207,7 +175,7 @@ while IFS= read -r line; do
     unprotected=$((unprotected+1))
     echo "    unguarded: $line"
 done < <(grep -h 'find "$HOME"/.*/config-loader.sh' \
-    "$REPO"/skills/*/SKILL.md "$REPO"/commands/*.md \
+    "$REPO"/skills/*/SKILL.md \
     "$REPO"/skills/shared/resolve-plugin-root.sh || true)
 assert_eq "every loader find assignment ends with || true" "0" "$unprotected"
 
