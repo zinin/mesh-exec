@@ -1,106 +1,100 @@
-# claude-mesh
+# mesh-exec
 
-Claude Code plugin: multi-model code review, alt-Claude execution against
-non-Anthropic providers (z.ai, Alibaba DashScope, DeepSeek, LiteLLM, Ollama
-daemon), and session helpers.
+Run a prompt through another model's CLI and keep a record of the run: Codex, Gemini, Grok,
+the Claude Code CLI itself, and Anthropic-compatible alt providers (z.ai, Alibaba DashScope,
+DeepSeek, LiteLLM, an Ollama daemon) through `claude -p`. Each run gets a directory with the
+prompt, the raw stream, the answer and a readable report; a watchdog restarts a stalled CLI.
 
-## Features
+An [Agent Skills](https://agentskills.io) plugin for Claude Code, Grok and Codex. Split out of
+claude-mesh 0.15.0: multi-model review moved to [mesh-review](https://github.com/zinin/mesh-review),
+plan execution and session hand-off to [session-relay](https://github.com/zinin/session-relay),
+the CLAUDE.md skill to [claude-md](https://github.com/zinin/claude-md).
 
-(Slash commands are namespaced under `claude-mesh:` — that is how Claude Code surfaces plugin commands.)
+## Skills and agents
 
-- **`/claude-mesh:mesh-review`** — orchestrate code review across multiple models in parallel; add
-  `autodecide` to have the disputed issues decided for you — same full analysis, an explicit
-  self-check, one commit per decision
-- **`/claude-mesh:mesh-design-review`** — iterative design-doc review with discussion of issues;
-  takes the same `autodecide` argument
-- **`ext-claude-code-reviewer` / `ext-claude-executor` agents** — Anthropic-API-compatible
-  models on alt providers (one agent, any provider, any model)
-- **`codex-*`, `gemini-*`, `grok-*` agents** — wrappers for the OpenAI Codex, Gemini and xAI
-  Grok CLIs. The grok wrappers take a `MODEL` from the `grok.models` catalog, so one
-  `/mesh-review` can run several grok models as independent reviewers
-- **`claude-code-reviewer` / `claude-executor` agents and the `/claude-mesh:claude-code-review`
-  skill** — the Claude Code CLI itself as a wrapper engine (`claude -p` under your `claude
-  login`, one reviewer per `claude.models` alias). On Claude Code the built-in `claude`
-  reviewer still runs in-process and these are not used; they are how `builtin: claude`
-  resolves on Grok Build, where there is no in-process Claude. See "Grok Build" below
-- **Session helpers** — `/claude-mesh:do-plan`, `/claude-mesh:pause-after-current-task`, `/claude-mesh:transfer-session`,
-  `/claude-mesh:exec-plan-fresh-session`, `/claude-mesh:continue-plan-fresh-session`,
-  `/claude-mesh:design-review-fresh-session`, `/claude-mesh:code-review-fresh-session`. The
-  prompt generators write the prompt to a file and print only its path — relative and
-  absolute — never the prompt itself, and never touch the clipboard
-- **`/claude-mesh:auto-decide-disputed`** — invoke mid-review to hand the remaining disputed issues
-  to the agent itself: it writes the same structured analysis, rebuts its own recommendation in a
-  `Проверка решения` section, marks each decision `уверенно` / `под вопросом`, and commits them one
-  by one — `git log --grep=auto-decide-disputed` lists the run, `git revert` undoes any single
-  decision. Same protocol as the `autodecide` argument of both review commands
-- **Sandbox-aware review sessions** — the two `*-review-fresh-session` commands generate a prompt
-  for a fresh session that reviews rather than implements, and never name a model: the session
-  runs `skills/shared/preflight-env.sh` where it actually lives and picks reviewers from what
-  that reports. For reviews that will run in an environment with a different `config.yaml` —
-  typically another machine, VM or sandbox. Workflow: generate the prompt on the host, hand
-  the file it names to a fresh session inside the sandbox; that session probes its own
-  environment and selects reviewers from what it finds
-- **`/claude-mesh:claude-md-writer`** — best practices for writing and refactoring `CLAUDE.md`:
-  size budgets, the three-tier `CLAUDE.md` → `.claude/rules/` → co-located layout, `paths:`
-  frontmatter for conditional loading, quality checklist. Vendored from an external project —
-  see [Credits](#credits)
-- **Grok Build** — `/mesh-review` and `/mesh-design-review` detect Grok by the presence of `spawn_subagent` and dispatch native `general-purpose` reviewers (`builtin: native`, slugs from `grok models`; `explore` has no shell on Grok 1.0.13, so the child is told not to edit files) alongside the CLI wrappers. `grok plugin list` empty is not "missing" — see [Grok Build](#grok-build)
-- **Context-size hook** — `check-context-size` warns when approaching the STOP threshold; active only inside a `/do-plan` session (silent everywhere else). On Grok `/do-plan` polls `signals.json` instead of waiting for a hook reminder
+- **`/mesh-exec:codex-exec`, `/mesh-exec:gemini-exec`, `/mesh-exec:grok-exec`** — run a prompt
+  through that CLI with full logging and progress display.
+- **`/mesh-exec:ext-claude-exec`** — run a prompt through `claude -p` against an alt provider
+  from `config.yaml`, or, with `HOST_CLAUDE=1`, through the Claude Code CLI under your own
+  `claude login`.
+- **Agents `mesh-exec:codex-executor`, `gemini-executor`, `grok-executor`, `ext-claude-executor`,
+  `claude-executor`** — the same runs as subagents, for Claude Code and Grok. mesh-review
+  dispatches them.
+- **`skills/shared/`** — the config loader, environment preflight, run watcher, delegation
+  guard and watchdog that the skills and mesh-review share.
 
 ## Install
 
+### Claude Code
+
 ```
-/plugin marketplace add zinin/claude-plugins
-/plugin install claude-mesh@zinin
+/plugin marketplace add zinin/agent-plugins
+/plugin install mesh-exec@zinin
 ```
+
+### Grok
+
+Nothing to do when Claude Code has it: Grok loads the plugins Claude Code installed. Without
+Claude Code: `grok plugin marketplace add zinin/agent-plugins`, then
+`grok plugin install mesh-exec --trust`.
+
+### Codex
+
+```
+codex plugin marketplace add zinin/agent-plugins
+codex plugin add mesh-exec@zinin
+```
+
+Codex has no plugin agents, so the `*-executor` agents do not exist there; the skills do. A
+run writes under `~/.local/state/mesh/`, outside the workspace: approve the write Codex asks
+about, or start it with `--add-dir ~/.local/state/mesh`.
 
 ## Configure
 
-1. Copy the example config:
+The config is `~/.config/mesh/config.yaml` (`$XDG_CONFIG_HOME/mesh/config.yaml` when that is
+set; `MESH_CONFIG` overrides the path). Runs live under `~/.local/state/mesh/runs/`
+(`$XDG_STATE_HOME/mesh`). Both paths are the same under every harness, and neither is deleted
+when you uninstall the plugin.
 
 ```bash
-# Data dir id is <plugin>-<marketplace> = claude-mesh-zinin (verified §11.A / Task 2.5).
-cp ~/.claude/plugins/cache/*/claude-mesh/*/config.example.yaml \
-   ~/.claude/plugins/data/claude-mesh-zinin/config.yaml
+mkdir -p ~/.config/mesh
+cp <plugin dir>/config.example.yaml ~/.config/mesh/config.yaml
+chmod 600 ~/.config/mesh/config.yaml
 ```
 
-2. Edit `~/.claude/plugins/data/claude-mesh-zinin/config.yaml`:
-   - Add your providers (URL + token) under `providers:`
-   - Add your models under `models:` with id format `<provider>/<short>`
-   - Optionally configure `claude:` / `codex:` / `gemini:` / `grok:` sections (`grok:` also
-     needs a non-empty `models:` catalog — see the schema table below)
-   - Adjust `defaults:` for `/claude-mesh:mesh-review default` and `/claude-mesh:mesh-design-review default`
+The plugin dir is the checkout, or `~/.claude/plugins/cache/zinin/mesh-exec/<version>/` after
+a marketplace install. Then edit the file:
+- providers (URL + token) under `providers:`, models under `models:` with id `<provider>/<short>`;
+- the optional `claude:` / `codex:` / `gemini:` / `grok:` sections (`grok:` needs a non-empty
+  `models:` catalog — see the schema table below);
+- `defaults:` — review presets for the mesh-review plugin, which reads this same file.
 
-3. Verify config:
+Check it: `bash <plugin dir>/skills/shared/config-loader.sh validate`.
+
+### Moving from claude-mesh
+
+claude-mesh kept the config in Claude Code's plugin-data directory. Copy it once:
 
 ```bash
-~/.claude/plugins/cache/*/claude-mesh/*/skills/shared/config-loader.sh validate
+mkdir -p ~/.config/mesh
+cp ~/.claude/plugins/data/claude-mesh-zinin/config.yaml ~/.config/mesh/config.yaml
+chmod 600 ~/.config/mesh/config.yaml
 ```
 
-Any errors → fix as instructed in the message.
+Until you do, every skill stops with `config.yaml not found` and prints that command.
+`runtime.do_plan_default_stop_tokens` is ignored now (`validate` says so): do-plan moved to
+session-relay, which has `stop_tokens` in `~/.config/session-relay/config.yaml`. Old runs stay
+in the old directory; nothing reads them.
 
 ### Grok Build
 
-This is a Claude Code plugin that Grok already loads from the Claude-compat cache.
-The same `config.yaml` serves both hosts.
-
-- Grok loads this plugin from `~/.claude/plugins/cache` (Claude compat). `grok plugin list`
-  may say none installed; that is not "missing". `grok inspect` is the inventory.
-- On Grok, `builtin: native` runs `spawn_subagent` with slugs from `grok models`.
-  `builtin: claude` runs `claude -p` (Claude Code CLI).
-- Grok `claude` reviewers run under `HOST_CLAUDE=1`: the CLI's own `claude login` credentials,
-  no provider `export` from `config.yaml`. That run unsets `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`
-  and the Bedrock / Vertex routing variables, so API-key, Bedrock or Vertex auth is not used
-  there — log the CLI in first. Run dirs: `runs/claude/<alias>/`.
-- A 0.12.0 preset without `native` does not start host slugs on Grok. Add `native`
-  (and `native_models`) yourself. Claude Code is unchanged.
-- Data dir is still `~/.claude/plugins/data/claude-mesh-zinin/`.
+- `builtin: native` in a mesh-review preset runs `spawn_subagent` with slugs from `grok models`;
+  `builtin: claude` runs `claude -p` (Claude Code CLI) under `HOST_CLAUDE=1`: the CLI's own
+  `claude login` credentials, no provider `export` from `config.yaml`. That run unsets
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL` and the Bedrock / Vertex routing variables, so log
+  the CLI in first. Run dirs: `runs/claude/<alias>/`.
 - The `grok models` probe that builds the native page waits `GROK_MODELS_TIMEOUT` seconds, else
-  `PREFLIGHT_CLI_TIMEOUT` (the knob `preflight-env.sh` names in its NO-NETWORK row), else 30.
-  A non-numeric value falls back to 30 with a warning. `/do-plan` uses the same probe: a
-  `runtime.dispatch_model` that is not a live host slug is dropped and subagents inherit the
-  session. On Grok, STOP is a poll of `signals.json` (`contextTokensUsed`), keyed by
-  `$GROK_SESSION_ID`; the hook is a backup, not the primary channel.
+  `PREFLIGHT_CLI_TIMEOUT`, else 30; a non-numeric value falls back to 30 with a warning.
 
 ## Claude Code settings (not plugin config)
 
@@ -157,15 +151,20 @@ value before the harness intervenes — which is exactly the runaway the default
 ## Dependencies
 
 The plugin requires:
-- `claude` CLI (this plugin runs on top of Claude Code). Mesh agents pin no model — subagents inherit your session model by default. To force a specific tier (e.g. `opus`, `fable`), set `runtime.dispatch_model` in config.yaml; if you name a model your Claude Code build does not support, dispatch fails at runtime — pick a supported alias/id. On Grok, `/do-plan` does not pass that value to `spawn_subagent` unless it is a live host slug from `grok models`; `opus` is dropped and the child inherits this session's model and effort (`spawn_subagent` has no effort field).
-  - `runtime.dispatch_model` governs the *plumbing*: the codex / gemini / grok / ext-claude wrapper agents, the `review-discussion` agent, and `/do-plan` subagents. To choose the models that actually *review*, list them under `claude.models` and pick a per-preset default in `defaults.<preset>.claude_models`: `/mesh-review` and `/mesh-design-review` then run one independent built-in reviewer per model (e.g. `opus` and `fable` at once) — whether the models come from the preset or from the interactive selection page — and those reviewers ignore `dispatch_model`. Leave the section out (or leave the list empty) and — whenever `claude` is selected at all (interactively, or via the preset's `builtin`) — you get exactly one claude reviewer on `dispatch_model` — as before for `/mesh-review`, and one more than before for `/mesh-design-review`, where `claude` used to be silently dropped. Without `claude` in play no claude reviewer runs, catalog or no catalog. **Cost scales linearly:** N Claude models = N full reviews of the same diff, on top of codex/gemini and every external model — three Claude models plus codex plus five external models is nine reviewers for one `/mesh-review`. Catalog entries are not checked against your Claude Code build: a name it does not accept fails that reviewer's dispatch — the run continues with the others, and the model is never silently substituted.
+- A harness that loads Agent Skills: Claude Code, Grok or Codex. The `claude` CLI is needed only
+  for `ext-claude-exec` (alt providers and `HOST_CLAUDE=1`).
+  - `runtime.dispatch_model` governs the plumbing: the codex / gemini / grok / ext-claude wrapper
+    agents and mesh-review's `review-discussion` agent. Empty = the subagent inherits the session
+    model. do-plan's subagents take `dispatch_model` from session-relay's own config instead.
+  - `claude.models` is the catalog mesh-review offers for the built-in `claude` reviewer; each
+    selected entry is one more full review, so cost scales with it.
 - `yq` — **either flavor**: Python-yq (`kislyuk/yq`) or Go-yq v4+ (`mikefarah/yq`). `config-loader.sh` does not identify the binary: it runs the transcode, keeps whichever invocation produced JSON, and — when the config contains a value that could have been mis-resolved — checks that `off`/`on`/`yes`/`no` came through as strings before trusting it. A `yq` that fails either check is refused by name, and your `config.yaml` is not blamed for it.
 - `jq` — for JSON parsing in stream-json mode
 - `bc`, `curl` — for `ext-claude-exec` skill
-- `python3` — for `ext-claude-exec` and for prompt templating (`shared/render-template.py`) in ALL review skills (`ext-claude-`, `codex-`, `gemini-`, `grok-code-review`); also for `shared/extract-result.py`, which `ext-claude-exec` and `grok-exec` both use to pull the final answer out of the stream
+- `python3` — for `ext-claude-exec`; also for `shared/extract-result.py`, which `ext-claude-exec` and `grok-exec` both use to pull the final answer out of the stream
 - `codex` CLI (only if using codex agents)
 - `gemini` CLI (only if using gemini agents)
-- `grok` CLI (only if using grok agents). It authenticates itself (`grok login`); claude-mesh never handles a grok token. Unlike codex and gemini, grok also reads your `~/.claude/CLAUDE.md` and every installed claude-* plugin — a grok reviewer starts with your project rules in context, and its review prompt forbids it from invoking any of those skills
+- `grok` CLI (only if using grok agents). It authenticates itself (`grok login`); mesh-exec never handles a grok token. Unlike codex and gemini, grok also reads your `~/.claude/CLAUDE.md` and every installed plugin — a grok reviewer starts with your project rules in context, and its review prompt forbids it from invoking any of those skills
 
 Install missing tools:
 - Ubuntu/Debian: `apt install jq bc curl python3`
@@ -175,7 +174,7 @@ Plus a `yq`, installed however your platform provides one. If your package manag
 
 ### macOS additional setup
 
-claude-mesh's scripts use **GNU coreutils** (`timeout`, `stdbuf`, `stat -c`, `setsid` from util-linux) and **GNU findutils** (`find -printf`, used by the delegation guard). macOS ships only BSD variants by default. After `brew install bash coreutils util-linux findutils`, prepend the gnubin paths to your `PATH` so `timeout`/`stat`/`setsid`/`find` resolve to the GNU versions:
+mesh-exec's scripts use **GNU coreutils** (`timeout`, `stdbuf`, `stat -c`, `setsid` from util-linux) and **GNU findutils** (`find -printf`, used by the delegation guard). macOS ships only BSD variants by default. After `brew install bash coreutils util-linux findutils`, prepend the gnubin paths to your `PATH` so `timeout`/`stat`/`setsid`/`find` resolve to the GNU versions:
 
 ```sh
 # Add to ~/.zshrc or ~/.bashrc
@@ -196,7 +195,7 @@ See `config.example.yaml` for the canonical example. Sections:
 | `codex:` | no | model + reasoning_level for codex CLI — the default for `/codex-*` skills and reviews unless the caller overrides; unknown levels pass through with a WARN (known set as of 2026-07 is listed in `config.example.yaml`) |
 | `gemini:` | no | model for gemini CLI — the default for `/gemini-*` skills and reviews unless the caller overrides |
 | `grok:` | no | `models:` — catalog of grok model ids for the built-in `grok` reviewer, **required and non-empty** while the section exists. `reasoning_effort:` — optional section-wide default; `model_efforts:` — optional per-model overrides of it, because the CLI validates the level per model. One reviewer per selected entry, so cost scales as for `claude.models`. All three keys have rules worth reading before you edit them — see below |
-| `defaults:` | no | named presets for `/claude-mesh:mesh-review default` etc. |
+| `defaults:` | no | named presets for `/mesh-review:mesh-review default` etc. (read by the mesh-review plugin) |
 | `defaults.*.native` | no | host-reviewer type in a preset's `builtin`. On Grok: `spawn_subagent` with slugs from `grok models`. On Claude Code: synonym of `claude` (not a second set). No `native:` YAML section |
 | `defaults.*.native_models` | no | Grok default native slugs for that preset. Ignored on Claude Code. A slug missing from live `grok models` is skipped, not a loader error. Requires `native` in the same preset's `builtin` |
 | `runtime:` | no | UI defaults + timeouts |
@@ -243,15 +242,6 @@ The resolution order a run follows is: the level a caller passed explicitly, the
 `grok.model_efforts[<model>]`, then `grok.reasoning_effort`, then — with none of them set — no
 `--effort` at all, which hands the choice to `~/.grok/config.toml`.
 
-## WARNING: Uninstall wipes config
-
-`/plugin uninstall claude-mesh@zinin` deletes `${CLAUDE_PLUGIN_DATA}` entirely,
-including your `config.yaml` with API tokens. **Always pass `--keep-data` if you
-want to keep the config.**
-
-If you want a separate backup, copy `~/.claude/plugins/data/claude-mesh-zinin/config.yaml`
-to a safe location before uninstalling.
-
 ## Troubleshooting
 
 | Problem | Solution |
@@ -260,28 +250,17 @@ to a safe location before uninstalling.
 | `yq: command not found` | Install either flavor — `pipx install yq` (Python-yq) or `apt install yq` / `brew install yq` (Go-yq v4+) |
 | `yq cannot produce JSON` | The `yq` on PATH answers neither `yq .` nor `yq -o=json .` with JSON — it is too old, or not a `yq` at all. Install one of the two flavors above |
 | `yq mis-resolves YAML scalars` | The `yq` on PATH resolves YAML 1.1, turning `off`/`yes` into booleans. Upgrade it, or install one of the two flavors above |
-| `config.yaml not found at ...` | See "Configure" section above |
+| config.yaml not found at … | See "Configure" and "Moving from claude-mesh" — the message prints the cp command when the old config is still there |
 | `models[X] references missing provider "Y"` | Add a `providers[]` entry with `id: Y` |
 | `Token expired or invalid for ...` | Update `token:` in the corresponding `providers[]` entry |
 | `grok: command not found` | Install Grok Build — `curl -fsSL https://x.ai/cli/install.sh \| bash`, the installer xAI documents in the CLI's own README — then `grok login` |
 | `grok` row reads `NO-NETWORK` in the probe | `grok models` failed: no network, or the CLI is signed out — run `grok login` |
-| A grok reviewer's `output.txt` reads `API Error: Couldn't set model to <id>` | The id in `grok.models` is not one this machine's CLI accepts — claude-mesh does not check ids and never substitutes one. Run `grok models`: it prints `Default model:` and then `Available models:`, one `  - <id>` per line with `*` marking the default — copy an id from there verbatim |
+| A grok reviewer's `output.txt` reads `API Error: Couldn't set model to <id>` | The id in `grok.models` is not one this machine's CLI accepts — mesh-exec does not check ids and never substitutes one. Run `grok models`: it prints `Default model:` and then `Available models:`, one `  - <id>` per line with `*` marking the default — copy an id from there verbatim |
 | `Ollama daemon not running` | `ollama serve` or `systemctl start ollama` |
 | `Daemon up but /api/tags returns error` | `ollama signin` |
 | `HTTP 404 / 501 from LiteLLM provider` | LiteLLM is in OpenAI-compat mode — enable Anthropic mode in your LiteLLM config, or pass `SKIP_TOKEN_PRECHECK=1` to `ext-claude-exec` |
-| Want to back up `config.yaml` before `/plugin uninstall` | Run `~/.claude/plugins/cache/*/claude-mesh/*/scripts/backup-config.sh` — it writes `~/claude-mesh-config-backup-<timestamp>.yaml` outside the plugin data dir |
-| External review dies at ~600 s; `watchdog.log` ends with `"event":"cleanup" … "exit_code":143` and there is no `watchdog.exit` | The wrapper launched its engine as a **foreground** Bash call and the harness SIGTERMed it at `BASH_MAX_TIMEOUT_MS`. `verify-delegation.sh` reports this as `KILLED` (exit 6) and `/mesh-review` does **not** re-dispatch it — an identical launch dies identically. The exec skills require a background launch; raise the ceiling as a safety net (see "Claude Code settings"). A cluster of deaths at the same round number is the signature |
-| `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.claude/plugins/data/claude-mesh*/runs -mindepth 4 -maxdepth 4 -type d -mtime +30 -exec rm -rf {} +` (Sunday 03:00 weekly, deletes per-run dirs older than 30 days). Adjust `+30` to your retention preference. |
-
-## Credits
-
-`skills/claude-md-writer/` is vendored from
-[serejaris/personal-corp-os](https://github.com/serejaris/personal-corp-os/tree/main/skills/claude-md-writer)
-(MIT), then corrected against the current Claude Code docs — the upstream copy had drifted
-since it was written. The skill's own footer lists every change. Upstream still maintains it;
-to see what has moved there, diff against
-`https://raw.githubusercontent.com/serejaris/personal-corp-os/main/skills/claude-md-writer/SKILL.md`,
-expecting our corrections to show up as differences.
+| External review dies at ~600 s; `watchdog.log` ends with `"event":"cleanup" … "exit_code":143` and there is no `watchdog.exit` | The wrapper launched its engine as a **foreground** Bash call and the harness SIGTERMed it at `BASH_MAX_TIMEOUT_MS`. `verify-delegation.sh` reports this as `KILLED` (exit 6) and `/mesh-review:mesh-review` does **not** re-dispatch it — an identical launch dies identically. The exec skills require a background launch; raise the ceiling as a safety net (see "Claude Code settings"). A cluster of deaths at the same round number is the signature |
+| `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.local/state/mesh/runs -mindepth 4 -maxdepth 4 -type d -mtime +30 -exec rm -rf {} +` (Sunday 03:00 weekly, deletes per-run dirs older than 30 days). Adjust `+30` to your retention preference. |
 
 ## License
 

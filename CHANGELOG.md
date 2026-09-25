@@ -1,6 +1,25 @@
 # Changelog
 
-All notable changes to claude-mesh will be documented here.
+All notable changes to mesh-exec (claude-mesh up to 0.15.0) will be documented here.
+
+## [Unreleased]
+
+### Changed
+- **Renamed from claude-mesh to mesh-exec** and cut down to one job: running prompts through
+  other models' CLIs. `/mesh-review` and `/mesh-design-review` with their reviewers moved to the
+  mesh-review plugin; `/do-plan`, `/pause-after-current-task` and the fresh-session prompt
+  generators to session-relay; `claude-md-writer` to claude-md. Skill and agent names change
+  accordingly: `/claude-mesh:codex-exec` is `/mesh-exec:codex-exec`.
+- **The config lives at `~/.config/mesh/config.yaml`, runs under `~/.local/state/mesh/`**
+  (XDG; `MESH_CONFIG` overrides the config path). No harness plugin-data directory is involved:
+  an uninstall no longer deletes the config, and Codex finds it too. When the old
+  `~/.claude/plugins/data/claude-mesh-*/config.yaml` is still there and the new one is not,
+  the loader prints the command that copies it. New `config-loader.sh config-path`.
+- **`runtime.do_plan_default_stop_tokens` is ignored with a warning** and `get-flag
+  do_plan_default_stop_tokens` is gone: do-plan has its own config in session-relay.
+
+### Removed
+- `scripts/backup-config.sh`: the config no longer sits where an uninstall deletes it.
 
 ## [0.15.0] - 2026-09-05
 
