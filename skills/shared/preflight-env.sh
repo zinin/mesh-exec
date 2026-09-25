@@ -823,7 +823,7 @@ UNAVAIL=""
 # the block — `CONFIG_STATUS != OK` covers three of them and `cp config.example.yaml …` is
 # right in only one. For INVALID and UNKNOWN a real config.yaml exists (in the UNKNOWN case
 # possibly a perfectly good one, on a machine that merely lacks yq) and that command overwrites
-# it, tokens and all. config.yaml is user-owned and agents never edit it (commands/mesh-review.md,
+# it, tokens and all. config.yaml is user-owned and agents never edit it (mesh-review/commands/mesh-review.md,
 # Step 1), so a table the generated prompts tell a session to print verbatim must not carry an
 # instruction to clobber it. It is also the distinction Task 1's config row exists to draw:
 # "install a usable yq" and "edit a healthy config" are different days' work.

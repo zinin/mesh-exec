@@ -189,7 +189,7 @@ case "$ENGINE" in
             # value becomes a path component. Unlike grok, a config-sourced model CAN fail it:
             # claude.models is validated with the wider IDENT_RE ([A-Za-z0-9._:@-]), because its
             # original role is a Task `model:` value on Claude Code, where it is never a path.
-            # skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
+            # mesh-review/skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
             # before a run dir exists, so one reaching here means that gate was bypassed. Beyond
             # that, this script is also a CLI entry point and BOTH
             # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is

@@ -69,7 +69,7 @@ for s in $SKILLS_WITH_RESOLVER; do
     f="$REPO/skills/$s/SKILL.md"
     n_resolve="$(grep -c 'bash "$SKILL_BASE/../shared/resolve-plugin-root.sh"' "$f" || true)"
     n_if="$(grep -c 'if \[ -n "\$SKILL_BASE" \]; then' "$f" || true)"
-    n_find="$(grep -c 'claude-mesh\*/skills/shared/config-loader.sh' "$f" || true)"
+    n_find="$(grep -c 'mesh-exec\*/skills/shared/config-loader.sh' "$f" || true)"
     n_installed="$(grep -c 'installed-plugins' "$f" || true)"
     if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -lt "$n_if" ]; then
         mismatch=$((mismatch+1))
@@ -153,15 +153,15 @@ ELSE_CHAIN="$(awk '/find "\$HOME"\/\.grok\/installed-plugins/ {print; getline; p
 assert_eq "extracted a 3-line else-chain from ext-claude-exec" "3" \
     "$(printf '%s\n' "$ELSE_CHAIN" | grep -c .)"
 TDIR=$(mktemp -d)
-mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared"
-: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared/config-loader.sh"
 GOT=$(HOME="$TDIR/home" GROK_SESSION_ID="grok-session-1" bash -c 'set -euo pipefail
 _LOADER=""
 '"$ELSE_CHAIN"'
 printf %s "$_LOADER"'); RC=$?
 assert_eq "skill else-chain ran cleanly under set -e" "0" "$RC"
 assert_eq "skill else-chain falls through to the Claude cache" \
-    "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
+    "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
 
 echo ""

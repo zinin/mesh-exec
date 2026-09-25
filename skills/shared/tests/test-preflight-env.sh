@@ -961,7 +961,7 @@ assert_match "…both of them"                            "SUMMARY defaults code
 # `CONFIG_STATUS != OK` is THREE states, and the hint is a literally executable command. Only
 # the MISSING one above may say `cp config.example.yaml …`: in the other two a real config.yaml
 # exists, that command OVERWRITES it — provider tokens and all — and config.yaml is user-owned
-# (commands/mesh-review.md Step 1: agents never edit it). The generated prompts tell a session
+# (mesh-review/commands/mesh-review.md Step 1: agents never edit it). The generated prompts tell a session
 # to print this table verbatim, so the wrong hint here is a destructive instruction with the
 # probe's authority behind it.
 run_probe invalid-no-providers.yaml

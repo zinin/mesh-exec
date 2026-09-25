@@ -129,11 +129,11 @@ yq_probe() {
 
 load_or_die() {
     # iter-2 CONCERN-11: "config not found" gets a DISTINCT exit code (2) so
-    # user-invoked commands like /do-plan can tolerate the genuinely-tolerable
-    # "no config yet" case during first-run, while every other class of error
-    # (yaml malformed, env binaries missing, validator die) still fast-fails
-    # via the canonical `die` (rc=1). See `commands/do-plan.md` Step 1 for the
-    # consumer side. Do NOT fold this into `die` — it must stay distinguishable.
+    # callers can tell the genuinely-tolerable "no config yet" case during first-run
+    # from every other class of error (yaml malformed, env binaries missing, validator
+    # die), which still fast-fails via the canonical `die` (rc=1). The mesh-review
+    # orchestrators branch on it (mesh-review/commands/mesh-review.md Step 1). Do NOT
+    # fold this into `die` — it must stay distinguishable.
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "config.yaml not found at $CONFIG_FILE." >&2
         # Up to 0.15.0 the config lived in Claude Code's plugin-data dir. Name the move instead
@@ -959,7 +959,7 @@ validate_defaults() {
         # and gemini carry on. The alternative — dying — made ONE typo in a user-owned file
         # print CONFIG INVALID, SKIP every preflight row and stop an orchestration that had not
         # asked for grok at all, which is the `ultra` incident's exact shape and the thing the
-        # laziness above exists to prevent. It is also what commands/mesh-review.md Step 1
+        # laziness above exists to prevent. It is also what mesh-review/commands/mesh-review.md Step 1
         # already assumes: it degrades grok alone on a bad section and says so. Strictness is
         # not lost — `validate` runs validate_grok on the full path and rejects the config, and
         # has_grok / list-grok-models / get-grok still exit 1, which is what makes

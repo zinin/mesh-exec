@@ -20,7 +20,7 @@ esac
 #   * A bullet on its own is not a model. `grok models` can exit 0 while printing bulleted
 #     prose — `Error: not logged in` followed by `  - run \`grok login\`` yields the slug
 #     `run` without it — and HOST_MODELS is what the interactive native page is built from
-#     (commands/mesh-review.md Step 2.3, "for each chunk of 4 entries from HOST_MODELS"),
+#     (mesh-review/commands/mesh-review.md Step 2.3, "for each chunk of 4 entries from HOST_MODELS"),
 #     so a bogus slug becomes a selectable reviewer and then a rejected spawn_subagent model:.
 #   * An output shape this does not recognise yields NOTHING, which is the fail-closed side:
 #     an empty HOST_MODELS is exactly the input `native_degraded` is written for, and that

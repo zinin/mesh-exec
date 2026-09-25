@@ -1747,7 +1747,7 @@ assert_stderr_contains "…and says which list it must belong to" "grok.models" 
 #
 # This is NOT the `ultra` incident returning. That was about a broken grok section GROUNDING the
 # environment; here rc=1 is what both orchestrators already handle by degrading grok ALONE and
-# printing the validator's message (commands/mesh-review.md Step 1), and what makes preflight
+# printing the validator's message (mesh-review/commands/mesh-review.md Step 1), and what makes preflight
 # print INVALID on the grok row rather than MISSING. The unconditional type gate at the top of
 # validate_defaults is untouched, so an UNREFERENCED broken section still grounds nothing.
 MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
