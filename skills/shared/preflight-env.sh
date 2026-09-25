@@ -237,7 +237,7 @@ else
     # misread as rc=1 (config rejected) — the same distinction every caller in this repo makes.
     MODELS="$(bash "$LOADER" list-models 2>"$LERR")"; LRC=$?
     case "$LRC" in
-        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$(bash "$LOADER" data-dir 2>/dev/null)/config.yaml"
+        0) CONFIG_STATUS="OK";      CONFIG_DETAIL="$(bash "$LOADER" config-path 2>/dev/null)"
            # config OK must mean "the orchestrator starts here": mesh-design-review Step 5.0
            # dies on defaults/runtime too, not only on providers/models. One preset name is
            # enough — get-defaults runs validate_defaults for the whole defaults: section.
@@ -259,7 +259,7 @@ else
                fi
                rm -f "$CH_ERR"
            done ;;
-        2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; cp config.example.yaml into the data dir"; MODELS="" ;;
+        2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; the blocker hint below names the path"; MODELS="" ;;
         *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
            # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
            # opened. The presence check above cannot catch those two — a `yq` that is present under
@@ -829,13 +829,13 @@ UNAVAIL=""
 # "install a usable yq" and "edit a healthy config" are different days' work.
 BLOCKER=""
 BLOCKER_HINT=""
-DATA_DIR="<plugin-data-dir>"
+CONFIG_PATH="<config-path>"
 if [ "$CONFIG_STATUS" != "OK" ] || [ "$CLAUDE_CATALOG_OK" = 0 ]; then
     # Only a blocked run needs a path, and only a blocked run pays for the extra loader start.
-    # Guarded because data-dir prints nothing when the loader is absent or its toolchain dead,
-    # and a hint whose path starts at the filesystem root points at a file nobody has.
-    DD="$(bash "$LOADER" data-dir 2>/dev/null)"
-    [ -z "$DD" ] || DATA_DIR="$DD"
+    # Guarded because config-path prints nothing when the loader is absent, and a hint whose
+    # path is empty points at a file nobody has.
+    CP="$(bash "$LOADER" config-path 2>/dev/null)"
+    [ -z "$CP" ] || CONFIG_PATH="$CP"
 fi
 case "$CONFIG_STATUS" in
     OK) ;;
@@ -845,14 +845,14 @@ case "$CONFIG_STATUS" in
         # other case: copying a config into place does nothing about a loader that is not there.
         case "$CONFIG_MISSING_CAUSE" in
             install)
-                BLOCKER="claude-mesh install is incomplete"
-                BLOCKER_HINT="reinstall or update the claude-mesh plugin — config-loader.sh is missing from $PLUGIN_ROOT/skills/shared; no config.yaml can fix that" ;;
+                BLOCKER="mesh-exec install is incomplete"
+                BLOCKER_HINT="reinstall or update the mesh-exec plugin — config-loader.sh is missing from $PLUGIN_ROOT/skills/shared; no config.yaml can fix that" ;;
             *)
-                BLOCKER_HINT="cp config.example.yaml $DATA_DIR/config.yaml — the review skills need it even for the built-in claude reviewer" ;;
+                BLOCKER_HINT="mkdir -p ${CONFIG_PATH%/*} && cp config.example.yaml $CONFIG_PATH — the review skills need it even for the built-in claude reviewer" ;;
         esac ;;
     INVALID)
         BLOCKER="config.yaml is rejected — see the config row"
-        BLOCKER_HINT="edit $DATA_DIR/config.yaml to fix what the config row reports — do NOT overwrite it with config.example.yaml: it is user-owned and holds your provider tokens" ;;
+        BLOCKER_HINT="edit $CONFIG_PATH to fix what the config row reports — do NOT overwrite it with config.example.yaml: it is user-owned and holds your provider tokens" ;;
     UNKNOWN)
         # UNKNOWN: the loader never ran, so nothing above is a statement about the file's
         # contents. MORE THAN ONE cause reaches here and their fixes have nothing in common —
@@ -876,7 +876,7 @@ case "$CONFIG_STATUS" in
             *)
                 U_FIX="fix what the config row above reports" ;;
         esac
-        BLOCKER_HINT="$U_FIX — then re-run; $DATA_DIR/config.yaml was never read, so nothing above says anything about its contents" ;;
+        BLOCKER_HINT="$U_FIX — then re-run; $CONFIG_PATH was never read, so nothing above says anything about its contents" ;;
     *)
         # Defence in depth: every member of the closed status set is spelled out above, so this
         # arm is unreachable today. It exists because the alternative to an unreachable arm is a
@@ -887,7 +887,7 @@ case "$CONFIG_STATUS" in
 esac
 if [ -z "$BLOCKER" ] && [ "$CLAUDE_CATALOG_OK" = 0 ]; then
     BLOCKER="the claude: section is rejected and both orchestrators exit on that read"
-    BLOCKER_HINT="fix the claude: section of $DATA_DIR/config.yaml (the claude-models row above carries the validator's reason) — both orchestrators exit on that read before offering anything"
+    BLOCKER_HINT="fix the claude: section of $CONFIG_PATH (the claude-models row above carries the validator's reason) — both orchestrators exit on that read before offering anything"
 fi
 
 add_unavail() { if [ -z "$UNAVAIL" ]; then UNAVAIL="$1"; else UNAVAIL="$UNAVAIL, $1"; fi; }

@@ -184,7 +184,7 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
         "$WORK"/*) [ -L "$grok_bin" ] || keep_grok=1 ;;
     esac
     [ "$keep_grok" = 1 ] || [ -z "$grok_bin" ] || probe_path="$WORK/grokskip:$probe_path"
-    OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
+    OUT="$(env MESH_CONFIG="$CFG_DIR/config.yaml" XDG_STATE_HOME="$CFG_DIR" TMPDIR="$CFG_DIR" \
                PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
                PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$probe_path" \
                "${env_rest[@]}" bash "$SCRIPT" 2>"$errf")"
@@ -307,7 +307,7 @@ mkdir -p "$WORK/mktempshim"
 MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
 cat > "$WORK/mktempshim/mktemp" <<SH
 #!/usr/bin/env bash
-for a in "\$@"; do case "\$a" in claude-mesh-cfg-*) exit 1 ;; esac; done
+for a in "\$@"; do case "\$a" in mesh-cfg-*) exit 1 ;; esac; done
 exec $MKTEMP_REAL "\$@"
 SH
 chmod +x "$WORK/mktempshim/mktemp"
@@ -471,7 +471,7 @@ assert_match "…and says the network was skipped" "skipped by PREFLIGHT_SKIP_NE
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_no_match "provider token never printed"        "tkn-zai" "$OUT"
 assert_no_match "…and never reaches stderr either"    "tkn-zai" "$ERR"
-LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
+LEFT="$(find "$CFG_DIR" -name 'mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "exported env files removed" 0 "$LEFT"
 
 echo "== Task 3: CLI and git rows =="
@@ -951,7 +951,8 @@ assert_match "…and is named with its verdict"     "zai/glm (NO-NETWORK)" "$UNA
 run_probe none
 assert_match "no config -> nothing selectable"       "SUMMARY available: —" "$OUT"
 assert_match "…claude named with the reason"         "claude (config.yaml required" "$OUT"
-assert_match "…and the one-line fix is hinted"       "hint: cp config.example.yaml" "$OUT"
+assert_match "…and the one-line fix is hinted"       "hint: mkdir -p" "$OUT"
+assert_match "…which copies the example into place"   "&& cp config.example.yaml" "$OUT"
 # The presets cannot be read without a config, and saying so is not the same as saying the
 # preset is empty — the loader was never asked.
 assert_match "…and the preset lines degrade, not crash" "SUMMARY defaults design_review: —" "$OUT"
@@ -1166,24 +1167,24 @@ printf '#!/usr/bin/env bash\nsleep 3\nexit 1\n' > "$WORK/curlstall/curl"
 chmod +x "$WORK/curlstall/curl"
 ICFG="$(mktemp -d "$WORK/int-XXXXXX")"
 cp "$TESTS_DIR/fixtures/valid-claude-models.yaml" "$ICFG/config.yaml"
-env CLAUDE_PLUGIN_DATA="$ICFG" TMPDIR="$ICFG" \
+env MESH_CONFIG="$ICFG/config.yaml" XDG_STATE_HOME="$ICFG" TMPDIR="$ICFG" \
     PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$WORK/grokskip:$PATH" \
     bash "$SCRIPT" >/dev/null 2>&1 &
 IPID=$!
 IW=0
 while [ "$IW" -lt 150 ]; do
-    find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -q . && break
+    find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -q . && break
     kill -0 "$IPID" 2>/dev/null || break
     sleep 0.1; IW=$((IW+1))
 done
 assert_eq   "the token file exists while the probe is mid-flight" \
-            1 "$([ "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c .)" -ge 1 ] && echo 1 || echo 0)"
+            1 "$([ "$(find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -c .)" -ge 1 ] && echo 1 || echo 0)"
 kill -TERM "$IPID" 2>/dev/null
 wait "$IPID" 2>/dev/null; IRC=$?
 # 143, not 0: "every verdict exits 0" covers completed runs, and an interrupt is not one.
 assert_eq   "an interrupted probe exits 143, never 0"  143 "$IRC"
 assert_eq   "…and the token file is gone"              0 \
-            "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c . | tr -d ' ')"
+            "$(find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -c . | tr -d ' ')"
 # The directory is what makes the guarantee reachable at all — the loader creates the file
 # inside the command substitution, so a name-only trap has nothing to delete until export
 # returns. If a future loader stops honouring TMPDIR, this is the assertion that fails.

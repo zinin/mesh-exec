@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# config-loader.sh — parses, validates, and exports claude-mesh config.
+# config-loader.sh — parses, validates, and exports the mesh config (mesh-exec, mesh-review).
 #
 # Usage:
 #   config-loader.sh validate           # validate only, exit 0/1
-#   config-loader.sh data-dir           # print resolved plugin data dir (no validation; works pre-config)
+#   config-loader.sh config-path        # print the config file path (no validation; works pre-config)
+#   config-loader.sh data-dir           # print the state dir holding runs/ and state/ (no validation)
 #   config-loader.sh export <model-id>  # validate + print `export KEY=val` lines
 #
-# Data dir resolved by resolve_plugin_data(): $CLAUDE_PLUGIN_DATA if set (hook context),
-# else the ~/.claude/plugins/data/claude-mesh-* dir with config.yaml, else claude-mesh-zinin.
-# (Task 2.5, CC 2.1.156: $CLAUDE_PLUGIN_DATA is EMPTY in skill Bash-tool calls.)
-# Config: $PLUGIN_DATA/config.yaml
+# Config: $MESH_CONFIG, else ${XDG_CONFIG_HOME:-~/.config}/mesh/config.yaml.
+# State:  ${XDG_STATE_HOME:-~/.local/state}/mesh.
+# Both are fixed paths, the same under Claude Code, Grok and Codex. No harness plugin-data
+# directory is involved, so an uninstall never deletes the config and a rename never moves it.
 
 set -u
 
@@ -21,21 +22,8 @@ set -u
     exit 1
 }
 
-resolve_plugin_data() {
-    # CLAUDE_PLUGIN_DATA is set in HOOK contexts but EMPTY in skill Bash-tool calls
-    # (Task 2.5, CC 2.1.156). Resolve robustly.
-    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then printf '%s\n' "$CLAUDE_PLUGIN_DATA"; return; fi
-    local d cand=""
-    for d in "$HOME"/.claude/plugins/data/claude-mesh-*; do
-        [ -d "$d" ] || continue
-        if [ -f "$d/config.yaml" ]; then printf '%s\n' "$d"; return; fi
-        [ -z "$cand" ] && cand="$d"
-    done
-    [ -n "$cand" ] && { printf '%s\n' "$cand"; return; }
-    printf '%s\n' "$HOME/.claude/plugins/data/claude-mesh-zinin"
-}
-PLUGIN_DATA="$(resolve_plugin_data)"
-CONFIG_FILE="$PLUGIN_DATA/config.yaml"
+CONFIG_FILE="${MESH_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/mesh/config.yaml}"
+PLUGIN_DATA="${XDG_STATE_HOME:-$HOME/.local/state}/mesh"
 
 die() {
     echo "config-loader: $*" >&2
@@ -74,13 +62,13 @@ require_yq() {
     # here would only be able to reject binaries that work.
     # The substring "yq not found" is matched by preflight-env.sh's CONFIG_DETAIL
     # toolchain-cause check — do not reword it.
-    command -v yq >/dev/null 2>&1 || die "yq not found. claude-mesh accepts either flavor: \
+    command -v yq >/dev/null 2>&1 || die "yq not found. mesh-exec accepts either flavor: \
 Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq v4+ (mikefarah/yq — 'apt install yq', \
 'brew install yq'). Install either one."
 }
 
 require_gnu_coreutils() {
-    # claude-mesh uses GNU-only utilities: `timeout`, `stdbuf`, `setsid`, `stat -c`, `find`.
+    # mesh-exec uses GNU-only utilities: `timeout`, `stdbuf`, `setsid`, `stat -c`, `find`.
     # On macOS these are absent by default (BSD find lacks `-printf`; BSD stat uses `-f`; no `timeout`
     # without coreutils; no `setsid` without util-linux). Users must install GNU coreutils + util-linux
     # + findutils via Homebrew and put gnubin first in PATH. Fast-fail with concrete instructions.
@@ -132,7 +120,7 @@ YQ_SCALARS_1_2='"string","string","boolean","number"'
 yq_probe() {
     YQ_PROBE_TYPES=""
     local d
-    d=$(mktemp -d -t claude-mesh-yqprobe-XXXXXX) || die "mktemp failed for the yq probe"
+    d=$(mktemp -d -t mesh-yqprobe-XXXXXX) || die "mktemp failed for the yq probe"
     printf 'a: off\nb: yes\nc: true\nd: 3\n' > "$d/probe.yaml"
     yq_to_json "$d/probe.yaml" "$d/probe.json" \
         && YQ_PROBE_TYPES=$(jq -r '[.a,.b,.c,.d|type]|@csv' "$d/probe.json" 2>/dev/null)
@@ -147,7 +135,20 @@ load_or_die() {
     # via the canonical `die` (rc=1). See `commands/do-plan.md` Step 1 for the
     # consumer side. Do NOT fold this into `die` — it must stay distinguishable.
     if [ ! -f "$CONFIG_FILE" ]; then
-        echo "config.yaml not found at $CONFIG_FILE. Copy config.example.yaml from the plugin install dir." >&2
+        echo "config.yaml not found at $CONFIG_FILE." >&2
+        # Up to 0.15.0 the config lived in Claude Code's plugin-data dir. Name the move instead
+        # of the generic advice when that copy is still there — the first run after the rename
+        # lands here. Only the message changes: nothing is copied, the file is the user's.
+        local old="" d
+        for d in "$HOME"/.claude/plugins/data/claude-mesh-*/config.yaml; do
+            [ -f "$d" ] && { old="$d"; break; }
+        done
+        if [ -n "$old" ]; then
+            echo "The claude-mesh config is still at $old. Move it:" >&2
+            echo "  mkdir -p \"${CONFIG_FILE%/*}\" && cp \"$old\" \"$CONFIG_FILE\" && chmod 600 \"$CONFIG_FILE\"" >&2
+        else
+            echo "Copy config.example.yaml from the mesh-exec plugin directory there and fill in your providers." >&2
+        fi
         exit 2
     fi
     require_yq
@@ -162,7 +163,7 @@ load_or_die() {
     # SNAPSHOT, so jq is the only thing those expressions must be valid for —
     # whichever `yq` transcoded the file stops mattering the moment the JSON
     # exists. The loader no longer needs its `yq` to be a jq wrapper.
-    CONFIG_JSON=$(mktemp -t claude-mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
+    CONFIG_JSON=$(mktemp -t mesh-cfg-XXXXXX.json) || die "mktemp failed for config snapshot"
     chmod 600 "$CONFIG_JSON"
     # Cleanup runs even on `die` because die exits non-zero and the EXIT trap fires. Armed HERE,
     # before anything that can exit, and not after the transcode block: yq_probe dies of its own
@@ -194,7 +195,7 @@ load_or_die() {
             if [ "$YQ_PROBE_TYPES" != "$YQ_SCALARS_1_2" ]; then
                 rm -f "$CONFIG_JSON"
                 die "yq mis-resolves YAML scalars: off/on/yes/no must stay strings (YAML 1.2 \
-core), but this yq turned them into booleans. claude-mesh needs Python-yq (kislyuk/yq) or \
+core), but this yq turned them into booleans. mesh-exec needs Python-yq (kislyuk/yq) or \
 Go-yq v4+ (mikefarah/yq). Got: $(yq --version 2>&1 | head -1)"
             fi
         fi
@@ -208,7 +209,7 @@ Go-yq v4+ (mikefarah/yq). Got: $(yq --version 2>&1 | head -1)"
             die "config snapshot: yaml→json conversion failed for $CONFIG_FILE (check yaml syntax)"
         else
             die "yq cannot produce JSON: neither 'yq .' nor 'yq -o=json .' returned JSON for a \
-known-good document. claude-mesh accepts Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq \
+known-good document. mesh-exec accepts Python-yq (kislyuk/yq — 'pipx install yq') or Go-yq \
 v4+ (mikefarah/yq — 'apt install yq', 'brew install yq'). Got: $(yq --version 2>&1 | head -1)"
         fi
     fi
@@ -1134,15 +1135,6 @@ validate_runtime() {
         esac
     fi
 
-    local dps
-    dps=$(jq -r '.runtime.do_plan_default_stop_tokens // ""' "$CONFIG_JSON")
-    if [ -n "$dps" ]; then
-        [[ "$dps" =~ ^[1-9][0-9]*$ ]] \
-            || die "runtime.do_plan_default_stop_tokens: must be positive integer, got \"$dps\""
-        [ "$dps" -ge 150000 ] \
-            || die "runtime.do_plan_default_stop_tokens: must be >= 150000 (hook does not emit below 150k), got $dps"
-    fi
-
     local mrd
     mrd=$(jq -r '.runtime.max_redispatch // ""' "$CONFIG_JSON")
     if [ -n "$mrd" ]; then
@@ -1190,6 +1182,12 @@ validate_all() {
 cmd_validate() {
     load_or_die
     validate_all
+    # do-plan left for the session-relay plugin, which has a config of its own. The key is
+    # still accepted, so a config copied over from claude-mesh validates as it is; `validate`
+    # names it once so it gets cleaned up — the getters stay quiet, they run many times a run.
+    if [ -n "$(jq -r '.runtime.do_plan_default_stop_tokens // ""' "$CONFIG_JSON")" ]; then
+        warn "runtime.do_plan_default_stop_tokens is ignored: do-plan moved to the session-relay plugin — set stop_tokens in ~/.config/session-relay/config.yaml and delete this key"
+    fi
 }
 
 cmd_export() {
@@ -1268,7 +1266,7 @@ cmd_export() {
     # mode 600 BEFORE any sensitive content is written, then closed atomically.
 
     local env_file
-    env_file=$(mktemp -t "claude-mesh-env-XXXXXX.sh") || die "export: mktemp failed"
+    env_file=$(mktemp -t "mesh-env-XXXXXX.sh") || die "export: mktemp failed"
     chmod 600 "$env_file"
     # Single redirect block so an early die() leaves a half-written file but doesn't
     # leak via the file handle. The caller is responsible for `rm -f` on success and trap-cleanup on failure.
@@ -1286,7 +1284,7 @@ cmd_export() {
     printf -v now '%(%Y-%m-%dT%H:%M:%S%z)T' -1
 
     {
-        printf '# claude-mesh env — created %s for model %s — sensitive, delete after source\n' "$now" "$model_id"
+        printf '# mesh env — created %s for model %s — sensitive, delete after source\n' "$now" "$model_id"
         printf 'export ANTHROPIC_BASE_URL=%q\n' "$base_url"
         printf 'export ANTHROPIC_AUTH_TOKEN=%q\n' "$token"
         printf 'export ANTHROPIC_API_KEY=""\n'
@@ -1323,15 +1321,15 @@ cmd_export() {
 
 cmd_get_flag() {
     # Query existence of optional config sections AND read small scalar config
-    # values without bypassing the loader. Used by /mesh-review (feature gating),
-    # /do-plan (default STOP threshold), etc.
+    # values without bypassing the loader. Used by /mesh-review (feature gating) and
+    # the mesh-exec wrappers.
     #
     # Output: "1"/"0" for has_* boolean flags, scalar value (string/integer) for
     #         documented getters. The exact contract is per-case.
     # Exit:   0 for every documented feature once the config loads — load_or_die
     #         still owns rc=2 ("no config.yaml"). die() fires (rc=1) on an unknown
-    #         feature name AND from the four validator-backed cases
-    #         (has_claude_models, has_grok, do_plan_default_stop_tokens, dispatch_model),
+    #         feature name AND from the three validator-backed cases
+    #         (has_claude_models, has_grok, dispatch_model),
     #         which surface the validator's own message on a malformed section:
     #         a consumer telling "absent" from "broken" must check rc, not stdout.
     local feature="${1:-}"
@@ -1388,37 +1386,18 @@ cmd_get_flag() {
         has_defaults_code_review)
             jq -e '.defaults.code_review' "$CONFIG_JSON" >/dev/null 2>&1 && echo 1 || echo 0
             ;;
-        do_plan_default_stop_tokens)
-            # Returns the configured value or "250000" as the documented default.
-            # Caller (commands/do-plan.md) trusts the integer, so we MUST run the
-            # validator that owns this field BEFORE reading. iter-2 CRITICAL-2:
-            # load_or_die does NOT invoke validators — `cmd_get_flag` historically
-            # bypassed validate_all() and silently accepted out-of-range / non-integer
-            # values. Pattern mirrors cmd_get_codex/cmd_get_gemini/cmd_get_defaults
-            # (each typed getter calls only the validator that owns its section,
-            # NOT the full validate_all — see iter-2 CONCERN-2/3).
-            # The bare-probe has_* cases above (has_codex / has_gemini / has_models /
-            # has_defaults_code_review) skip validation on purpose: each is a single
-            # `jq -e` probe whose rc IS the answer, so a malformed section simply reads
-            # as "absent" and the validator runs later, in the typed getter that actually
-            # reads field values. has_claude_models is not one of them — it VALIDATES
-            # BEFORE READING, so a malformed `claude:` section fails loudly (rc=1, the
-            # validator's own message) instead of jq's rc=5 being swallowed by `|| echo 0`
-            # and reported as a missing catalog. (Indexing depth is not the distinction:
-            # has_models probes `.models[0]`, inside its section too.)
-            validate_runtime
-            jq -r '.runtime.do_plan_default_stop_tokens // 250000' "$CONFIG_JSON"
-            ;;
         dispatch_model)
             # Optional. Empty output = no value set → the caller omits model: on dispatch
             # and the subagent inherits the session model. validate_runtime owns the
-            # field's charset check, so run it before reading (mirrors
-            # do_plan_default_stop_tokens above).
+            # field's charset check, so run it BEFORE reading: load_or_die does not invoke
+            # validators (iter-2 CRITICAL-2), and each typed getter calls only the validator
+            # that owns its section (iter-2 CONCERN-2/3). The bare-probe has_* cases above
+            # skip validation on purpose: a single `jq -e` probe whose rc IS the answer.
             validate_runtime
             jq -r '.runtime.dispatch_model // empty' "$CONFIG_JSON"
             ;;
         *)
-            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_grok, has_models, has_claude_models, has_defaults_code_review, do_plan_default_stop_tokens, dispatch_model)"
+            die "get-flag: unknown feature \"$feature\" (valid: has_codex, has_gemini, has_grok, has_models, has_claude_models, has_defaults_code_review, dispatch_model)"
             ;;
     esac
 }
@@ -1538,8 +1517,8 @@ cmd_get_defaults() {
     jq -c --argjson gd "$gd" "{builtin: ((.defaults.${category}.builtin // []) | if \$gd then map(select(. != \"grok\")) else . end), claude_models: (.defaults.${category}.claude_models // []), grok_models: (if \$gd then [] else (.defaults.${category}.grok_models // []) end), native_models: (.defaults.${category}.native_models // []), models: (.defaults.${category}.models // []), run_mode: (.defaults.${category}.run_mode // null), grok_degraded: \$gd}" "$CONFIG_JSON"
 }
 
-# iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode) + the do-plan
-# threshold, as a JSON object. /mesh-review and /do-plan read these without raw yq.
+# iter-3 CONCERN-1: typed getter for runtime UI defaults (default_run_mode), as a JSON
+# object. /mesh-review reads these without raw yq.
 # timeouts added in fix wave 5: the mesh-review / mesh-design-review disk-watch bounds
 # itself by runtime.timeouts.global_sec "via the loader", so the getter must actually
 # emit the block. Defaults mirror cmd_export / Design §4 exactly.
@@ -1547,7 +1526,6 @@ cmd_get_runtime() {
     load_or_die
     validate_runtime
     jq -c '{default_run_mode: (.runtime.default_run_mode // "background"),
-            do_plan_default_stop_tokens: (.runtime.do_plan_default_stop_tokens // 250000),
             max_redispatch: (.runtime.max_redispatch // 1),
             dispatch_model: (.runtime.dispatch_model // ""),
             timeouts: {single_run_sec: (.runtime.timeouts.single_run_sec // 1800),
@@ -1558,9 +1536,13 @@ cmd_get_runtime() {
 
 case "${1:-}" in
     validate) cmd_validate ;;
+    config-path)
+        # WITHOUT load_or_die: callers name this path precisely when there is no config yet.
+        printf '%s\n' "$CONFIG_FILE"
+        ;;
     data-dir)
-        # Task 2.5: print the resolved plugin data dir WITHOUT load_or_die, so skills can
-        # compute their runs/ path even on a fresh install (no config.yaml yet).
+        # WITHOUT load_or_die, so skills can compute their runs/ path even on a fresh
+        # install (no config.yaml yet).
         printf '%s\n' "$PLUGIN_DATA"
         ;;
     export)
@@ -1600,7 +1582,7 @@ case "${1:-}" in
         cmd_get_grok "${2:-}"
         ;;
     *)
-        echo "Usage: $0 {validate|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-grok-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini|get-grok [<model>]}" >&2
+        echo "Usage: $0 {validate|config-path|data-dir|export <model-id>|get-flag <feature>|list-models|list-claude-models|list-grok-models|list-providers|get-defaults <category>|get-runtime|get-codex|get-gemini|get-grok [<model>]}" >&2
         exit 2
         ;;
 esac
