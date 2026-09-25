@@ -81,7 +81,9 @@ cp ~/.claude/plugins/data/claude-mesh-zinin/config.yaml ~/.config/mesh/config.ya
 chmod 600 ~/.config/mesh/config.yaml
 ```
 
-Until you do, every skill stops with `config.yaml not found` and prints that command.
+Until you do, the loader stops with `config.yaml not found at …` and prints that command.
+mesh-review and `ext-claude-exec` on a provider model stop there; `codex-exec`, `gemini-exec`,
+`grok-exec` and `HOST_CLAUDE=1` runs warn and continue on their defaults.
 `runtime.do_plan_default_stop_tokens` is ignored now (`validate` says so): do-plan moved to
 session-relay, which has `stop_tokens` in `~/.config/session-relay/config.yaml`. Old runs stay
 in the old directory; nothing reads them.
