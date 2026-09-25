@@ -149,12 +149,12 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     . "$SKILL_DIR/host-claude-env.sh"
     # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
     # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
-    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # WARN naming the file the loader looked for. rc=1 (a file that exists and does not validate)
     # still STOPs — that is a user-owned config to fix, never to guess around.
     RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
     RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
     if [ "$RT_RC" -eq 2 ]; then
-        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        echo "WARN: no config.yaml at $("$LOADER" config-path) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
         RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
     elif [ "$RT_RC" -ne 0 ]; then
         echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
@@ -345,12 +345,12 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     . "$SKILL_DIR/host-claude-env.sh"
     # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
     # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
-    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # WARN naming the file the loader looked for. rc=1 (a file that exists and does not validate)
     # still STOPs — that is a user-owned config to fix, never to guess around.
     RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
     RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
     if [ "$RT_RC" -eq 2 ]; then
-        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        echo "WARN: no config.yaml at $("$LOADER" config-path) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
         RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
     elif [ "$RT_RC" -ne 0 ]; then
         echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
@@ -500,12 +500,12 @@ if [ "${HOST_CLAUDE:-}" = "1" ]; then
     . "$SKILL_DIR/host-claude-env.sh"
     # rc=2 is "no config.yaml at all": the official CLI needs no provider section, so a
     # standalone claude-executor / claude-code-reviewer run gets the documented defaults and a
-    # WARN naming the dir the loader looked in. rc=1 (a file that exists and does not validate)
+    # WARN naming the file the loader looked for. rc=1 (a file that exists and does not validate)
     # still STOPs — that is a user-owned config to fix, never to guess around.
     RT_ERR=$(mktemp) || { echo "STOP: mktemp failed" >&2; exit 1; }
     RT_RC=0; RUNTIME=$("$LOADER" get-runtime 2>"$RT_ERR") || RT_RC=$?
     if [ "$RT_RC" -eq 2 ]; then
-        echo "WARN: no config.yaml under $("$LOADER" data-dir) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
+        echo "WARN: no config.yaml at $("$LOADER" config-path) — HOST_CLAUDE uses default timeouts single=1800s stall=600s global=3600s retries=2" >&2
         RUNTIME='{"timeouts":{"single_run_sec":1800,"stall_sec":600,"global_sec":3600,"max_retries":2}}'
     elif [ "$RT_RC" -ne 0 ]; then
         echo "STOP: config-loader get-runtime failed — surface the error verbatim; do NOT edit config.yaml (user-owned):" >&2; cat "$RT_ERR" >&2; rm -f "$RT_ERR"; exit 1
