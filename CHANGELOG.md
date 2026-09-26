@@ -6,10 +6,12 @@ All notable changes to mesh-exec (claude-mesh up to 0.15.0) will be documented h
 
 ### Changed
 - **Renamed from claude-mesh to mesh-exec** and cut down to one job: running prompts through
-  other models' CLIs. `/mesh-review` and `/mesh-design-review` with their reviewers moved to the
-  mesh-review plugin; `/do-plan`, `/pause-after-current-task` and the fresh-session prompt
-  generators to session-relay; `claude-md-writer` to claude-md. Skill and agent names change
-  accordingly: `/claude-mesh:codex-exec` is `/mesh-exec:codex-exec`.
+  other models' CLIs. `/mesh-review`, `/mesh-design-review`, `/auto-decide-disputed` and the
+  review prompt generators (`/code-review-fresh-session`, `/design-review-fresh-session`) moved
+  with their reviewers to the mesh-review plugin; `/do-plan`, `/pause-after-current-task`,
+  `/transfer-session`, `/exec-plan-fresh-session`, `/continue-plan-fresh-session` and the
+  context-size hook to session-relay; `claude-md-writer` to claude-md. Skill and agent names
+  change accordingly: `/claude-mesh:codex-exec` is `/mesh-exec:codex-exec`.
 - **The config lives at `~/.config/mesh/config.yaml`, runs under `~/.local/state/mesh/`**
   (XDG; `MESH_CONFIG` overrides the config path). No harness plugin-data directory is involved:
   an uninstall no longer deletes the config, and Codex finds it too. When the old
