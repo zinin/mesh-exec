@@ -39,7 +39,8 @@ After smoke: `claude plugin enable mesh-exec@zinin`.
 
 Interactive `grok` has no `--plugin-dir`. That flag exists on `grok agent … stdio`
 and is **ignored in leader mode**. Install the tree from a directory named
-`mesh-exec` (a copy is fine):
+`mesh-exec` (a copy is fine, but refresh it from the working tree before each
+reinstall below, or the new snapshot is the old copy):
 
 ```bash
 grok plugin install /absolute/path/to/mesh-exec --trust
@@ -109,6 +110,9 @@ tree, not `~/.claude/plugins/cache/`.
 - mesh-review calls these scripts across the plugin boundary: `config-loader.sh` (subcommands
   `data-dir`, `config-path`, `get-flag`, `get-defaults`, `get-runtime`, `list-models`,
   `list-claude-models`, `list-grok-models`, `get-codex`, `get-gemini`), `preflight-env.sh`,
-  `watch-runs.sh`, `verify-delegation.sh`, `watchdog.sh`, `list-host-models.sh`. A change to
-  their interface ships in the same release as the matching mesh-review change.
+  `watch-runs.sh`, `verify-delegation.sh`, `watchdog.sh`, `list-host-models.sh`; it invokes the
+  exec skills (`mesh-exec:<engine>-exec`) and executor agents (`mesh-exec:<engine>-executor`) by
+  name and reads the run directories they write (`runs/<engine>/…`, `.session_id`,
+  `output.txt`, `final/`, `watchdog.log`). A change to any of these ships in the same release as
+  the matching mesh-review change.
 - Tests: `for f in skills/shared/tests/test-*.sh; do bash "$f"; done`.
