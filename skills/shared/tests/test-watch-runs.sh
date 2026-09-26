@@ -715,5 +715,13 @@ assert_match "claude row is DONE" "DONE" "$(row claude/opus)"
 rm -rf "$TDIR"
 
 echo ""
+echo "Test 43: no state dir yet — the first review on a fresh machine"
+TDIR="$(mktemp -d)"
+run --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR/never-created" codex
+assert_eq "absent state dir: rc 0" "0" "$RC"
+assert_match "absent state dir: a snapshot, not a death" "SNAPSHOT" "$OUT"
+rm -rf "$TDIR"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]
