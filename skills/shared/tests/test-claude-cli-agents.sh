@@ -71,7 +71,7 @@ for s in $SKILLS_WITH_RESOLVER; do
     n_if="$(grep -c 'if \[ -n "\$SKILL_BASE" \]; then' "$f" || true)"
     n_find="$(grep -c 'mesh-exec\*/skills/shared/config-loader.sh' "$f" || true)"
     n_installed="$(grep -c 'installed-plugins' "$f" || true)"
-    if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -lt "$n_if" ]; then
+    if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -ne $((3 * n_if)) ]; then
         mismatch=$((mismatch+1))
         echo "    mismatch $s: resolve=$n_resolve if=$n_if find=$n_find"
     fi
@@ -163,6 +163,17 @@ assert_eq "skill else-chain ran cleanly under set -e" "0" "$RC"
 assert_eq "skill else-chain falls through to the Claude cache" \
     "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
+# Review Focus 2 on the Grok path: claude-mesh copies carry the same marker in all three roots.
+OHOME=$(mktemp -d)
+for p in .grok/installed-plugins/claude-mesh-aabbccdd .claude/plugins/cache/zinin/claude-mesh/9.9.9 .grok/plugins/cache/zinin/claude-mesh/9.9.9; do
+    mkdir -p "$OHOME/$p/skills/shared"; : > "$OHOME/$p/skills/shared/config-loader.sh"
+done
+GOT=$(HOME="$OHOME" GROK_SESSION_ID="grok-session-1" bash -c 'set -euo pipefail
+_LOADER=""
+'"$ELSE_CHAIN"'
+printf %s "$_LOADER"')
+assert_eq "skill else-chain never takes a claude-mesh copy" "" "$GOT"
+rm -rf "$OHOME"
 
 echo ""
 echo "=== Test: every loader-find assignment is guarded against find rc=1 ==="
