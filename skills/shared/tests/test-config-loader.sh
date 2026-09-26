@@ -62,6 +62,7 @@ RC=$?
 assert_exit "exits with rc=2 (distinct 'config not found')" "2" "$RC"
 assert_stderr_contains "names the missing file" "config.yaml not found at /nonexistent/config.yaml" "$ERR"
 assert_stderr_contains "no old config: generic advice" "Copy config.example.yaml" "$ERR"
+assert_stderr_contains "…as a command that sets mode 600" "chmod 600 \"/nonexistent/config.yaml\"" "$ERR"
 rm -rf "$ERR" "$NOHOME"
 
 echo "=== Test 1b: an old claude-mesh config gets the exact move command ==="

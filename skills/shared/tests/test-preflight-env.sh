@@ -1024,11 +1024,11 @@ assert_no_match "…and none of the old config's contents, on either stream" \
     "dummy-old-config-body" "$OUT$ERR"
 
 # The other half of the same branch: an empty HOME has nothing to move, and the advice stays
-# exactly what it was — the example, copied to the path the loader resolves.
+# the example, copied from the plugin root to the path the loader resolves, with mode 600.
 NEWH="$(mktemp -d "$WORK/home-new-XXXXXX")"
 run_probe none HOME="$NEWH" MESH_CONFIG=
 assert_eq    "no old config -> the example hint, unchanged" \
-    "hint: mkdir -p $NEWH/.config/mesh && cp config.example.yaml $NEWH/.config/mesh/config.yaml — the review skills need it even for the built-in claude reviewer" \
+    "hint: mkdir -p \"$NEWH/.config/mesh\" && (cd \"$(cd "$TESTS_DIR/../../.." && pwd)\" && cp config.example.yaml \"$NEWH/.config/mesh/config.yaml\") && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
     "$(grep '^hint:' <<<"$OUT")"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
