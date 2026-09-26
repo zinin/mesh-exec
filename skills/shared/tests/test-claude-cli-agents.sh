@@ -180,5 +180,56 @@ done < <(grep -h 'find "$HOME"/.*/config-loader.sh' \
 assert_eq "every loader find assignment ends with || true" "0" "$unprotected"
 
 echo ""
+echo "=== Test: codex-/gemini-/grok-exec soft gates when config.yaml is missing ==="
+# Loader rc=2 is "no config.yaml at all". The gate names the file through config-path, passes
+# the loader's own lines on — with the old claude-mesh config still in place they carry the
+# command that moves it — and the run continues on defaults (rc 0). A config without the
+# engine's block, a configured block and any other loader failure keep their old outcome and
+# text. Each gate is extracted from its SKILL.md and executed: against the real loader in a
+# scratch HOME for rc=2, against a stub loader for the rest.
+GHOME=$(mktemp -d)
+OLDCFG="$GHOME/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+NEWCFG="$GHOME/.config/mesh/config.yaml"
+mkdir -p "${OLDCFG%/*}"; printf 'providers: {}\n' > "$OLDCFG"
+STUB="$GHOME/stub-loader.sh"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    config-path) echo "/stub/config.yaml" ;;
+    get-flag)
+        [ "${STUB_RC:-0}" = 0 ] || { echo "config-loader: stub failure" >&2; exit "$STUB_RC"; }
+        echo "${STUB_FLAG:-1}" ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+for e in codex gemini grok; do
+    GATE="$(awk '/^# Soft gate:/ {s=1} s && /^if \[ -x "\$LOADER" \]; then$/ {g=1} g {print} g && /^fi$/ {exit}' \
+        "$REPO/skills/$e-exec/SKILL.md")"
+    OUT=$(env -u MESH_CONFIG -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$GHOME" \
+        LOADER="$REPO/skills/shared/config-loader.sh" bash -c "$GATE" 2>&1); RC=$?
+    assert_eq "$e-exec: no config.yaml -> a WARN naming its path, and the run goes on" \
+        "0|WARN: no config.yaml at $NEWCFG — continuing on defaults. It is user-owned; agents never create or edit it. The loader says:" \
+        "$RC|$(printf '%s\n' "$OUT" | head -1)"
+    assert_eq "$e-exec: …followed by the loader's move command" "1" \
+        "$(printf '%s\n' "$OUT" | grep -cxF "  mkdir -p \"${NEWCFG%/*}\" && cp \"$OLDCFG\" \"$NEWCFG\" && chmod 600 \"$NEWCFG\"")"
+    OUT=$(STUB_FLAG=0 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    assert_eq "$e-exec: a config without the $e: block keeps the old WARN" \
+        "0|WARN: $e: block not configured in config.yaml ($e uses its own auth — continuing)" "$RC|$OUT"
+    OUT=$(STUB_FLAG=1 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    if [ "$e" = grok ]; then WANT="0|"; else WANT="0|OK: has_$e configured"; fi
+    assert_eq "$e-exec: a configured block passes as before" "$WANT" "$RC|$OUT"
+    OUT=$(STUB_RC=1 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    if [ "$e" = grok ]; then
+        assert_eq "grok-exec: a grok: section that does not validate still STOPs" \
+            "1|STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:" \
+            "$RC|$(printf '%s\n' "$OUT" | head -1)"
+    else
+        assert_eq "$e-exec: any other loader failure keeps the old WARN" \
+            "0|WARN: $e: block not configured in config.yaml ($e uses its own auth — continuing)" "$RC|$OUT"
+    fi
+done
+rm -rf "$GHOME"
+
+echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="
 [ "$FAIL" = "0" ]

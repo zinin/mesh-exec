@@ -152,9 +152,17 @@ echo "OK: codex found"
 # Soft gate: warn (don't STOP) if the optional codex: block is unconfigured. codex
 # CLI handles its own auth, so an absent block is non-fatal. NEVER test get-codex's
 # string for truthiness — it prints a lone '|' when unset; use the get-flag helper.
+# rc=2 is "no config.yaml at all": the WARN names the file the loader looked for and passes the
+# loader's own lines on (a second call prints them) — with the old claude-mesh config still in
+# place they carry the command that moves it. The run then continues on defaults all the same.
 if [ -x "$LOADER" ]; then
-    if [ "$("$LOADER" get-flag has_codex 2>/dev/null)" = "1" ]; then
+    FLAG_RC=0
+    HAS_CODEX=$("$LOADER" get-flag has_codex 2>/dev/null) || FLAG_RC=$?
+    if [ "$HAS_CODEX" = "1" ]; then
         echo "OK: has_codex configured"
+    elif [ "$FLAG_RC" -eq 2 ]; then
+        echo "WARN: no config.yaml at $("$LOADER" config-path) — continuing on defaults. It is user-owned; agents never create or edit it. The loader says:"
+        "$LOADER" get-flag has_codex 2>&1 >/dev/null || true
     else
         echo "WARN: codex: block not configured in config.yaml (codex uses its own auth — continuing)"
     fi

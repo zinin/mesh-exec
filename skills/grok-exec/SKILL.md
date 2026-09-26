@@ -190,7 +190,9 @@ command -v bc >/dev/null 2>&1 || echo "WARN: bc not found — the report's durat
 # an empty stdout, and a bare `!= "1"` then reports "not configured" for a section that is
 # right there — the user hunts for something that is not missing while this run silently falls
 # back to whatever ~/.grok/config.toml names as default, which need not even be a grok model.
-# rc=2 is the separate "no config.yaml at all", which IS unconfigured, so it keeps the warning.
+# rc=2 is the separate "no config.yaml at all", which IS unconfigured, so it warns and continues:
+# the WARN names the file the loader looked for and passes the loader's lines on — with the old
+# claude-mesh config still in place they carry the command that moves it.
 # The review path states the same rule at mesh-review/skills/grok-code-review/SKILL.md:102-108; it STOPs on
 # every non-zero rc because a review cannot start without a model, while a direct call can.
 if [ -x "$LOADER" ]; then
@@ -201,8 +203,13 @@ if [ -x "$LOADER" ]; then
         echo "STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:"
         cat "$GROK_ERR"; rm -f "$GROK_ERR"; exit 1
     fi
+    if [ "$FLAG_RC" -eq 2 ]; then
+        echo "WARN: no config.yaml at $("$LOADER" config-path) — continuing on defaults. It is user-owned; agents never create or edit it. The loader says:"
+        cat "$GROK_ERR"
+    else
+        [ "$HAS_GROK" = "1" ] || echo "WARN: grok: block not configured in config.yaml (grok uses its own auth — continuing)"
+    fi
     rm -f "$GROK_ERR"
-    [ "$HAS_GROK" = "1" ] || echo "WARN: grok: block not configured in config.yaml (grok uses its own auth — continuing)"
 fi
 ```
 

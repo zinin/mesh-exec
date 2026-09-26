@@ -701,7 +701,7 @@ fi
 |-------|----------|
 | `claude: command not found` | Install Claude CLI |
 | HOST_CLAUDE=1 unauthenticated / STALLED | `claude login` — do not paste a token into yaml |
-| `config.yaml not found` | Copy from plugin's `config.example.yaml` |
+| `config.yaml not found at …` | The user's step — agents never create or edit it. If the loader's next lines say the claude-mesh config is still at … and give a `mkdir -p … && cp … && chmod 600 …` command, relay that command; otherwise copy the plugin's `config.example.yaml` to the path the loader names (`"$LOADER" config-path`), `chmod 600` it and fill in the providers |
 | `yq not found` | Install either flavor: `pipx install yq` (Python-yq) or `apt install yq` / `brew install yq` (Go-yq v4+) |
 | `models[X] references missing provider` | Add missing provider to `providers:` in config |
 | Token precheck failed (HTTP 401/403) | Update `token:` in `providers[X]` |
