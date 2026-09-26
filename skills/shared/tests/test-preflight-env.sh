@@ -1027,7 +1027,7 @@ assert_no_match "…and none of the old config's contents, on either stream" \
 # the example, copied from the plugin root to the path the loader resolves, with mode 600.
 NEWH="$(mktemp -d "$WORK/home-new-XXXXXX")"
 run_probe none HOME="$NEWH" MESH_CONFIG=
-assert_eq    "no old config -> the example hint, unchanged" \
+assert_eq    "no old config -> the example, copied from the plugin root with mode 600" \
     "hint: mkdir -p \"$NEWH/.config/mesh\" && (cd \"$(cd "$TESTS_DIR/../../.." && pwd)\" && cp config.example.yaml \"$NEWH/.config/mesh/config.yaml\") && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
     "$(grep '^hint:' <<<"$OUT")"
 
