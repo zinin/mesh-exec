@@ -212,6 +212,13 @@ CONFIG_UNKNOWN_CAUSE=""
 # yet" is fixed by copying the example, "the loader is not where it should be" is a broken
 # install that copying a config does not touch. The hint at the bottom branches on this.
 CONFIG_MISSING_CAUSE=""
+# "No config.yaml yet" has a case of its own that needs different advice: the first run after
+# the rename from claude-mesh, when the config still sits in Claude Code's plugin-data dir. The
+# loader names that copy and prints the command that moves it; copying the example instead would
+# start a blank config beside the one holding the provider tokens. Both values are read back
+# from the loader's stderr, never re-derived here: the old-config search has one owner.
+CONFIG_OLD_PATH=""
+CONFIG_MOVE_CMD=""
 
 if [ "$TOOLCHAIN_OK" = 0 ]; then
     CONFIG_STATUS="UNKNOWN"
@@ -259,7 +266,16 @@ else
                fi
                rm -f "$CH_ERR"
            done ;;
-        2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; the blocker hint below names the path"; MODELS="" ;;
+        2) CONFIG_STATUS="MISSING"; CONFIG_MISSING_CAUSE="noconfig"; CONFIG_DETAIL="no config.yaml here — the review skills will not start; the blocker hint below names the path"; MODELS=""
+           # Two lines of the loader's message and nothing else from it (config-loader.sh,
+           # load_or_die): "The claude-mesh config is still at <old>. Move it:" and the
+           # mkdir/cp/chmod command on the line after. Both carry paths only — the loader tests
+           # that the old file exists and never opens it. Matching its wording is the cost, as
+           # for the toolchain causes below; the old-config scenario in test-preflight-env.sh
+           # keeps the two in step. No match leaves both empty and the hint on the example.
+           CONFIG_OLD_PATH="$(sed -n 's/^The claude-mesh config is still at \(.*\)\. Move it:$/\1/p' "$LERR" | head -1)"
+           CONFIG_MOVE_CMD="$(awk 'hit { sub(/^[ \t]+/, ""); if (/^mkdir -p .* && cp .* && chmod 600 /) print; exit }
+                                   /^The claude-mesh config is still at .*\. Move it:$/ { hit = 1 }' "$LERR")" ;;
         *) # rc=1 means "the loader refused", which is not the same as "the config is bad":
            # require_yq and require_gnu_coreutils die with this very code BEFORE config.yaml is
            # opened. The presence check above cannot catch those two — a `yq` that is present under
@@ -848,7 +864,13 @@ case "$CONFIG_STATUS" in
                 BLOCKER="mesh-exec install is incomplete"
                 BLOCKER_HINT="reinstall or update the mesh-exec plugin — config-loader.sh is missing from $PLUGIN_ROOT/skills/shared; no config.yaml can fix that" ;;
             *)
-                BLOCKER_HINT="mkdir -p ${CONFIG_PATH%/*} && cp config.example.yaml $CONFIG_PATH — the review skills need it even for the built-in claude reviewer" ;;
+                # The loader found the claude-mesh config in its old home: the fix is to move
+                # that file, not to start a blank one, and the command is the loader's, verbatim.
+                if [ -n "$CONFIG_OLD_PATH" ] && [ -n "$CONFIG_MOVE_CMD" ]; then
+                    BLOCKER_HINT="the claude-mesh config is still at $CONFIG_OLD_PATH — move it: $CONFIG_MOVE_CMD"
+                else
+                    BLOCKER_HINT="mkdir -p ${CONFIG_PATH%/*} && cp config.example.yaml $CONFIG_PATH — the review skills need it even for the built-in claude reviewer"
+                fi ;;
         esac ;;
     INVALID)
         BLOCKER="config.yaml is rejected — see the config row"

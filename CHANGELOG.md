@@ -15,6 +15,10 @@ All notable changes to mesh-exec (claude-mesh up to 0.15.0) will be documented h
   an uninstall no longer deletes the config, and Codex finds it too. When the old
   `~/.claude/plugins/data/claude-mesh-*/config.yaml` is still there and the new one is not,
   the loader prints the command that copies it. New `config-loader.sh config-path`.
+- **`preflight-env.sh` prints the loader's move command** when the old claude-mesh config is
+  still in place and the new one is not: its `hint:` line is the loader's own
+  `mkdir -p … && cp … && chmod 600 …` rather than `cp config.example.yaml`, which would start a
+  blank config beside the one holding the provider tokens.
 - **`runtime.do_plan_default_stop_tokens` is ignored with a warning** and `get-flag
   do_plan_default_stop_tokens` is gone: do-plan has its own config in session-relay.
 

@@ -125,7 +125,10 @@ mkfarm() {              # mkfarm <dir> [binary-to-omit ...]
 
 # Each run gets a private data dir (so the suite never reads the developer's ~/.claude config)
 # and a private TMPDIR (so exported env files, which carry tokens, cannot leak into shared /tmp
-# and can be counted afterwards).
+# and can be counted afterwards). HOME is that dir too, and XDG_CONFIG_HOME is dropped: with no
+# config.yaml the loader searches $HOME/.claude/plugins/data for the old claude-mesh config, and
+# a case that blanks MESH_CONFIG resolves ${XDG_CONFIG_HOME:-$HOME/.config}/mesh/config.yaml. On
+# a developer's machine both are the real config, and the old one's path would decide the hint.
 #
 # run_probe assigns OUT / ERR / RC / CFG_DIR as globals and is called as a STANDALONE command —
 # never as OUT="$(run_probe …)". A command substitution would strand the assignments in its
@@ -184,7 +187,8 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
         "$WORK"/*) [ -L "$grok_bin" ] || keep_grok=1 ;;
     esac
     [ "$keep_grok" = 1 ] || [ -z "$grok_bin" ] || probe_path="$WORK/grokskip:$probe_path"
-    OUT="$(env MESH_CONFIG="$CFG_DIR/config.yaml" XDG_STATE_HOME="$CFG_DIR" TMPDIR="$CFG_DIR" \
+    OUT="$(env -u XDG_CONFIG_HOME HOME="$CFG_DIR" \
+               MESH_CONFIG="$CFG_DIR/config.yaml" XDG_STATE_HOME="$CFG_DIR" TMPDIR="$CFG_DIR" \
                PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
                PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$probe_path" \
                "${env_rest[@]}" bash "$SCRIPT" 2>"$errf")"
@@ -995,6 +999,37 @@ assert_no_match "…not at a toolchain that is already installed" "install the l
 assert_no_match "…and never at yq"                              "install a yq that emits JSON" "$OUT"
 assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
 assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
+
+# MISSING has a second face since the rename. Up to 0.15.0 the config lived in Claude Code's
+# plugin-data dir, so on the first run after the update the tokens are still there while
+# ~/.config/mesh/config.yaml does not exist yet, and `cp config.example.yaml` would start a
+# blank config beside the one that holds them. The loader names the old copy and prints the
+# command that moves it (config-loader.sh, load_or_die); the hint has to be that command.
+# MESH_CONFIG is blanked so the loader resolves its default path under the scratch HOME, as a
+# real first run does. The old config is a dummy: two lines, one of them a marker.
+OLDH="$(mktemp -d "$WORK/home-old-XXXXXX")"
+OLDCFG="$OLDH/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+mkdir -p "${OLDCFG%/*}"
+printf 'providers: {}\nmodels: []   # dummy-old-config-body\n' > "$OLDCFG"
+run_probe none HOME="$OLDH" MESH_CONFIG=
+assert_eq    "old claude-mesh config, no new one -> still MISSING" MISSING "$(field config "$OUT")"
+assert_match "…and the hint moves the old config into place" \
+    "cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\"" "$OUT"
+assert_no_match "…never a blank example in its stead" "cp config.example.yaml" "$OUT"
+assert_eq    "…the loader's own command, verbatim, after a lead naming the old copy" \
+    "hint: the claude-mesh config is still at $OLDCFG — move it: mkdir -p \"$OLDH/.config/mesh\" && cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\" && chmod 600 \"$OLDH/.config/mesh/config.yaml\"" \
+    "$(grep '^hint:' <<<"$OUT")"
+# Paths only: nothing on either stream may come from inside the old file.
+assert_no_match "…and none of the old config's contents, on either stream" \
+    "dummy-old-config-body" "$OUT$ERR"
+
+# The other half of the same branch: an empty HOME has nothing to move, and the advice stays
+# exactly what it was — the example, copied to the path the loader resolves.
+NEWH="$(mktemp -d "$WORK/home-new-XXXXXX")"
+run_probe none HOME="$NEWH" MESH_CONFIG=
+assert_eq    "no old config -> the example hint, unchanged" \
+    "hint: mkdir -p $NEWH/.config/mesh && cp config.example.yaml $NEWH/.config/mesh/config.yaml — the review skills need it even for the built-in claude reviewer" \
+    "$(grep '^hint:' <<<"$OUT")"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
 # there is no network verdict to qualify, so the note would point at a marker that is not on the
