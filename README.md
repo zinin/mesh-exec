@@ -50,9 +50,9 @@ run writes under `~/.local/state/mesh/`, outside the workspace: approve the writ
 about, or start it with `--add-dir ~/.local/state/mesh`.
 
 Smoke-tested in `codex exec` 0.157: codex-exec and grok-exec answered with
-`--add-dir ~/.local/state/mesh -c sandbox_workspace_write.network_access=true` (grok-exec also
-needs `--add-dir ~/.grok`); ext-claude-exec did not start, because Codex refuses the `rm -f` in
-its preflight.
+`--add-dir ~/.local/state/mesh -c sandbox_workspace_write.network_access=true` plus their CLI's
+home (`--add-dir ~/.codex`, `--add-dir ~/.grok`); ext-claude-exec did not start, because Codex
+refuses the `rm -f` in its preflight.
 
 ## Configure
 
