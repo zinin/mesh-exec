@@ -56,6 +56,14 @@ home (`--add-dir ~/.codex`, `--add-dir ~/.grok`), which makes that CLI's config 
 writable inside the sandbox. ext-claude-exec did not start, because Codex refuses the `rm -f` in
 its preflight. gemini-exec was not verified: the test machine has no Gemini credentials.
 
+Not solved yet, and tracked under "Codex follow-up" in the
+[agent-plugins README](https://github.com/zinin/agent-plugins#codex-follow-up): the fences look
+for mesh-exec only in Claude Code's and Grok's plugin directories, so without a Claude Code
+install they stop with `mesh-exec plugin root not found` unless the model fills in the skill
+path Codex shows; a background run does not outlive the `codex exec` turn, so the engine has to
+run in the foreground; and `$$` is always 2 in Codex's Linux sandbox, so two runs of one task
+started in the same second share a run directory.
+
 ## Configure
 
 The config is `~/.config/mesh/config.yaml` (`$XDG_CONFIG_HOME/mesh/config.yaml` when that is
@@ -273,7 +281,7 @@ The resolution order a run follows is: the level a caller passed explicitly, the
 | `Daemon up but /api/tags returns error` | `ollama signin` |
 | `HTTP 404 / 501 from LiteLLM provider` | LiteLLM is in OpenAI-compat mode — enable Anthropic mode in your LiteLLM config, or pass `SKIP_TOKEN_PRECHECK=1` to `ext-claude-exec` |
 | External review dies at ~600 s; `watchdog.log` ends with `"event":"cleanup" … "exit_code":143` and there is no `watchdog.exit` | The wrapper launched its engine as a **foreground** Bash call and the harness SIGTERMed it at `BASH_MAX_TIMEOUT_MS`. `verify-delegation.sh` reports this as `KILLED` (exit 6) and `/mesh-review:mesh-review` does **not** re-dispatch it — an identical launch dies identically. The exec skills require a background launch; raise the ceiling as a safety net (see "Claude Code settings"). A cluster of deaths at the same round number is the signature |
-| `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.local/state/mesh/runs -mindepth 4 -maxdepth 4 -type d -mtime +30 -exec rm -rf {} +` (Sunday 03:00 weekly, deletes per-run dirs older than 30 days). Adjust `+30` to your retention preference. |
+| `runs/` directory grows large over time | No automatic cleanup (intentional — personal-use plugin, hot-path I/O minimised). Add a cron one-liner: `0 3 * * 0 find ~/.local/state/mesh/runs -mindepth 2 -maxdepth 4 -type d -regextype posix-extended -regex '.*/[0-9]{4}(-[0-9]{2}){5}-[^/]*' -mtime +30 -prune -exec rm -rf {} +` (a run dir is named `YYYY-MM-DD-HH-MM-SS-…` and sits two to four levels down; `$XDG_STATE_HOME/mesh/runs` when that is set) — Sunday 03:00 weekly, deletes per-run dirs older than 30 days. Adjust `+30` to your retention preference. |
 
 ## License
 
