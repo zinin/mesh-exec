@@ -38,21 +38,25 @@ After smoke: `claude plugin enable mesh-exec@zinin`.
 ### Grok Build — copy into `installed-plugins`
 
 Interactive `grok` has no `--plugin-dir`. That flag exists on `grok agent … stdio`
-and is **ignored in leader mode**. Install the tree:
+and is **ignored in leader mode**. Install the tree from a directory named
+`mesh-exec` (a copy is fine):
 
 ```bash
 grok plugin install /absolute/path/to/mesh-exec --trust
-grok plugin enable mesh-exec
 ```
 
-Then start a **new** session (or reload plugins). This is a **copy**, not a
-symlink, at `~/.grok/installed-plugins/mesh-exec-<hash>`. After you change
-the working tree, edits do not apply until you **reinstall**:
+`--trust` also enables the plugin: `grok plugin enable mesh-exec` is needed only
+after a `grok plugin disable`. Then start a **new** session (or reload plugins).
+This is a **copy**, not a symlink, at `~/.grok/installed-plugins/mesh-exec-<hash>`.
+Grok names the snapshot after the source directory, not the plugin: a checkout
+still named `claude-mesh` gives `claude-mesh-<hash>`, which the resolver and
+mesh-review's `find-mesh-exec.sh` never see — they match `mesh-exec` only, so that
+an old claude-mesh copy cannot pass for it. After you change the working tree,
+edits do not apply until you **reinstall**:
 
 ```bash
 grok plugin uninstall mesh-exec --confirm
 grok plugin install /absolute/path/to/mesh-exec --trust
-grok plugin enable mesh-exec
 ```
 
 and start a new session. `grok plugin update mesh-exec` does **not** recopy a
@@ -68,7 +72,8 @@ must list one entry; uninstall before installing from another path. The
 snapshot is searched only inside a Grok session (`GROK_SESSION_ID` set), so a
 stale one cannot reach a Claude Code run — but it will reach the next Grok one.
 
-Remove the native copy: `grok plugin uninstall mesh-exec --confirm`.
+Remove the native copy: `grok plugin uninstall mesh-exec --confirm`. The name stays
+in `[plugins].enabled` of `~/.grok/config.toml`; that is harmless.
 
 ### Confirm this session loaded the branch
 
