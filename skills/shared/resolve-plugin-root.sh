@@ -14,7 +14,8 @@ if [ -n "${GROK_PLUGIN_ROOT:-}" ] && loader_at "$GROK_PLUGIN_ROOT"; then
     printf '%s\n' "$GROK_PLUGIN_ROOT"; exit 0
 fi
 # Unpublished Grok install (`grok plugin install <tree>`) copies the plugin to
-# ~/.grok/installed-plugins/mesh-exec-<hash>. That path is what `grok inspect`
+# ~/.grok/installed-plugins/<dir>-<hash>, where <dir> is the tree's directory name, not the
+# plugin's (the find below needs mesh-exec in it). That path is what `grok inspect`
 # loads. A stale Claude-compat cache under ~/.claude/plugins must not win: measured
 # 2026-09-01, sort -V | tail -1 on the cache picked 0.12.0 and HOST_CLAUDE wrappers
 # ran the old loader. Search installed-plugins first, then the two cache trees.
