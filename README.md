@@ -49,6 +49,11 @@ Codex has no plugin agents, so the `*-executor` agents do not exist there; the s
 run writes under `~/.local/state/mesh/`, outside the workspace: approve the write Codex asks
 about, or start it with `--add-dir ~/.local/state/mesh`.
 
+Smoke-tested in `codex exec` 0.157: codex-exec and grok-exec answered with
+`--add-dir ~/.local/state/mesh -c sandbox_workspace_write.network_access=true` (grok-exec also
+needs `--add-dir ~/.grok`); ext-claude-exec did not start, because Codex refuses the `rm -f` in
+its preflight.
+
 ## Configure
 
 The config is `~/.config/mesh/config.yaml` (`$XDG_CONFIG_HOME/mesh/config.yaml` when that is
