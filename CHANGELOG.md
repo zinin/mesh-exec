@@ -17,8 +17,8 @@ All notable changes to mesh-exec (claude-mesh up to 0.15.0) will be documented h
   an uninstall no longer deletes the config, and Codex finds it too. When the old
   `~/.claude/plugins/data/claude-mesh-*/config.yaml` is still there and the new one is not,
   the loader prints the command that copies it; on a fresh install it prints one that copies
-  `config.example.yaml` with mode 600, and codex-, gemini- and grok-exec, which go on with their
-  defaults, warn with the config path and relay the loader's command. New
+  `config.example.yaml` with mode 600. In either case codex-, gemini- and grok-exec, which go
+  on with their defaults, warn with the config path and relay the loader's command. New
   `config-loader.sh config-path`.
 - **`preflight-env.sh` prints the loader's move command** when the old claude-mesh config is
   still in place and the new one is not: its `hint:` line is the loader's own
