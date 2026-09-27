@@ -956,7 +956,9 @@ run_probe none
 assert_match "no config -> nothing selectable"       "SUMMARY available: —" "$OUT"
 assert_match "…claude named with the reason"         "claude (config.yaml required" "$OUT"
 assert_match "…and the one-line fix is hinted"       "hint: mkdir -p" "$OUT"
-assert_match "…which copies the example into place"   "&& cp config.example.yaml" "$OUT"
+# The needle is the example as cp's source. The never-overwrite checks below reuse it, and this
+# match is what keeps them from passing vacuously when the hint's form changes.
+assert_match "…which copies the example into place"   "config.example.yaml\" \"" "$OUT"
 # The presets cannot be read without a config, and saying so is not the same as saying the
 # preset is empty — the loader was never asked.
 assert_match "…and the preset lines degrade, not crash" "SUMMARY defaults design_review: —" "$OUT"
@@ -973,7 +975,7 @@ assert_eq   "rejected config -> nothing selectable" "SUMMARY available: —" "$(
 assert_match "…claude named with the rejection, not with a missing file" "claude (config.yaml is rejected" "$OUT"
 assert_match "…and the hint says to EDIT the file"   "hint: edit"        "$OUT"
 assert_match "…because it is the operator's, not ours" "do NOT overwrite" "$OUT"
-assert_no_match "…never offering to overwrite a real config" "cp config.example.yaml" "$OUT"
+assert_no_match "…never offering to overwrite a real config" "config.example.yaml\" \"" "$OUT"
 
 # UNKNOWN is the worst of the three to get wrong: the loader never ran, so the config may well
 # be perfect and the only thing missing is yq. Naming what to install matters here too: both
@@ -983,7 +985,7 @@ assert_eq   "unevaluated config -> nothing selectable either" "SUMMARY available
 assert_match "…claude says exactly that, and not that a file is missing" "claude (config state could not be evaluated" "$OUT"
 assert_match "…the hint names the tool the rows above reported" "install a yq that emits JSON" "$OUT"
 assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
-assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
+assert_no_match "…never offering to overwrite an unread config" "config.example.yaml\" \"" "$OUT"
 
 # UNKNOWN has TWO causes and one hint line, so the hint has to know which one it is advising
 # about. It used to be a `*)` arm prescribing yq/jq for both — an operator whose TMPDIR is
@@ -998,7 +1000,7 @@ assert_match "…and the hint points at TMPDIR"                   "hint: make TM
 assert_no_match "…not at a toolchain that is already installed" "install the loader toolchain" "$OUT"
 assert_no_match "…and never at yq"                              "install a yq that emits JSON" "$OUT"
 assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
-assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
+assert_no_match "…and never offering to overwrite it"           "config.example.yaml\" \"" "$OUT"
 
 # MISSING has a second face since the rename. Up to 0.15.0 the config lived in Claude Code's
 # plugin-data dir, so on the first run after the update the tokens are still there while
@@ -1015,7 +1017,7 @@ run_probe none HOME="$OLDH" MESH_CONFIG=
 assert_eq    "old claude-mesh config, no new one -> still MISSING" MISSING "$(field config "$OUT")"
 assert_match "…and the hint moves the old config into place" \
     "cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\"" "$OUT"
-assert_no_match "…never a blank example in its stead" "cp config.example.yaml" "$OUT"
+assert_no_match "…never a blank example in its stead" "config.example.yaml\" \"" "$OUT"
 assert_eq    "…the loader's own command, verbatim, after a lead naming the old copy" \
     "hint: the claude-mesh config is still at $OLDCFG — move it: mkdir -p \"$OLDH/.config/mesh\" && cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\" && chmod 600 \"$OLDH/.config/mesh/config.yaml\"" \
     "$(grep '^hint:' <<<"$OUT")"
@@ -1028,19 +1030,20 @@ assert_no_match "…and none of the old config's contents, on either stream" \
 NEWH="$(mktemp -d "$WORK/home-new-XXXXXX")"
 run_probe none HOME="$NEWH" MESH_CONFIG=
 assert_eq    "no old config -> the example, copied from the plugin root with mode 600" \
-    "hint: mkdir -p \"$NEWH/.config/mesh\" && (cd \"$(cd "$TESTS_DIR/../../.." && pwd)\" && cp config.example.yaml \"$NEWH/.config/mesh/config.yaml\") && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
+    "hint: mkdir -p \"$NEWH/.config/mesh\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"$NEWH/.config/mesh/config.yaml\" && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
     "$(grep '^hint:' <<<"$OUT")"
 # Same branch with a slashless MESH_CONFIG, run from an empty directory: config.yaml names a file
-# there, so the directory to create is "." — ${CONFIG_PATH%/*} left the name itself, and the
-# hint's mkdir -p turned the config path into a directory. The cd goes around run_probe, never
-# into a subshell with it: that would strand OUT.
+# there. ${CONFIG_PATH%/*} left the name itself, so the hint's mkdir -p made the config path a
+# directory, and a cp run after a cd into the plugin root put the copy there instead. The test's
+# own cd wraps the standalone run_probe call: inside a subshell it would strand OUT.
 SLASHWD="$(mktemp -d "$WORK/cwd-XXXXXX")"
 HERE="$PWD"
 cd "$SLASHWD" || exit 1
 run_probe none HOME="$NEWH" MESH_CONFIG=config.yaml
 cd "$HERE" || exit 1
-assert_match "slashless MESH_CONFIG -> the hint creates \".\", not the config's name" \
-    "hint: mkdir -p \".\" && (cd " "$OUT"
+assert_eq    "slashless MESH_CONFIG -> mkdir -p \".\", and the copy lands in the working directory" \
+    "hint: mkdir -p \".\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\" — the review skills need it even for the built-in claude reviewer" \
+    "$(grep '^hint:' <<<"$OUT")"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
 # there is no network verdict to qualify, so the note would point at a marker that is not on the

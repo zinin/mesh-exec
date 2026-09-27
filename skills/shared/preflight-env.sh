@@ -869,9 +869,8 @@ case "$CONFIG_STATUS" in
                 if [ -n "$CONFIG_OLD_PATH" ] && [ -n "$CONFIG_MOVE_CMD" ]; then
                     BLOCKER_HINT="the claude-mesh config is still at $CONFIG_OLD_PATH — move it: $CONFIG_MOVE_CMD"
                 else
-                    # dirname, not ${CONFIG_PATH%/*}: the strip leaves a slashless MESH_CONFIG as
-                    # it is, and the hint's mkdir -p would make the config a directory.
-                    BLOCKER_HINT="mkdir -p \"$(dirname -- "$CONFIG_PATH")\" && (cd \"$PLUGIN_ROOT\" && cp config.example.yaml \"$CONFIG_PATH\") && chmod 600 \"$CONFIG_PATH\" — the review skills need it even for the built-in claude reviewer"
+                    # dirname, and no cd before the cp: MESH_CONFIG may be a relative path.
+                    BLOCKER_HINT="mkdir -p \"$(dirname -- "$CONFIG_PATH")\" && cp \"$PLUGIN_ROOT/config.example.yaml\" \"$CONFIG_PATH\" && chmod 600 \"$CONFIG_PATH\" — the review skills need it even for the built-in claude reviewer"
                 fi ;;
         esac ;;
     INVALID)
