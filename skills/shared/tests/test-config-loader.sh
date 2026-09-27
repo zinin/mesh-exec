@@ -80,6 +80,30 @@ assert_stderr_contains "prints the cp command" "cp \"$H/.claude/plugins/data/cla
 assert_eq_str "the new file was not created" "absent" "$([ -e "$H/.config/mesh/config.yaml" ] && echo present || echo absent)"
 rm -rf "$H" "$ERR"
 
+echo "=== Test 1b2: a slashless MESH_CONFIG gets mkdir -p \".\" in both commands ==="
+# MESH_CONFIG=config.yaml names a file in the working directory, so the parent to create is ".".
+# ${CONFIG_FILE%/*} left a slashless name as it was: the printed mkdir -p "config.yaml" turned the
+# config file into a directory. Both runs start in an empty directory, so no config.yaml is found.
+H=$(mktemp -d)
+WD=$(mktemp -d)
+mkdir -p "$H/.claude/plugins/data/claude-mesh-zinin"
+cp "$FIXTURES/valid-minimal.yaml" "$H/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+ERR=$(mktemp)
+(cd "$WD" && env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$H" MESH_CONFIG=config.yaml "$LOADER" validate 2>"$ERR")
+RC=$?
+assert_exit "old config, slashless MESH_CONFIG: rc=2" "2" "$RC"
+assert_eq_str "…the move command creates \".\", not the config's name" \
+    "  mkdir -p \".\" && cp \"$H/.claude/plugins/data/claude-mesh-zinin/config.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\"" \
+    "$(grep -F 'mkdir -p' "$ERR")"
+rm -rf "$H/.claude"
+(cd "$WD" && env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$H" MESH_CONFIG=config.yaml "$LOADER" validate 2>"$ERR")
+RC=$?
+assert_exit "no old config, slashless MESH_CONFIG: rc=2" "2" "$RC"
+assert_eq_str "…the example command creates \".\" as well" \
+    "  mkdir -p \".\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\"" \
+    "$(grep -F 'mkdir -p' "$ERR")"
+rm -rf "$H" "$WD" "$ERR"
+
 echo "=== Test 1c: config-path and data-dir follow XDG and MESH_CONFIG ==="
 H=$(mktemp -d)
 assert_eq_str "config-path default" "$H/.config/mesh/config.yaml" \

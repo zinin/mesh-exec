@@ -143,14 +143,18 @@ load_or_die() {
         for d in "$HOME"/.claude/plugins/data/claude-mesh-*/config.yaml; do
             [ -f "$d" ] && { old="$d"; break; }
         done
+        # dirname, not ${CONFIG_FILE%/*}: the strip leaves a slashless MESH_CONFIG=config.yaml as
+        # it is (mkdir -p would make the config a directory) and /config.yaml as an empty string.
+        local parent
+        parent="$(dirname -- "$CONFIG_FILE")"
         if [ -n "$old" ]; then
             echo "The claude-mesh config is still at $old. Move it:" >&2
-            echo "  mkdir -p \"${CONFIG_FILE%/*}\" && cp \"$old\" \"$CONFIG_FILE\" && chmod 600 \"$CONFIG_FILE\"" >&2
+            echo "  mkdir -p \"$parent\" && cp \"$old\" \"$CONFIG_FILE\" && chmod 600 \"$CONFIG_FILE\"" >&2
         else
             local example
             example="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/config.example.yaml"
             echo "Copy config.example.yaml there and fill in your providers — it will hold tokens, so mode 600:" >&2
-            echo "  mkdir -p \"${CONFIG_FILE%/*}\" && cp \"$example\" \"$CONFIG_FILE\" && chmod 600 \"$CONFIG_FILE\"" >&2
+            echo "  mkdir -p \"$parent\" && cp \"$example\" \"$CONFIG_FILE\" && chmod 600 \"$CONFIG_FILE\"" >&2
         fi
         exit 2
     fi

@@ -1030,6 +1030,17 @@ run_probe none HOME="$NEWH" MESH_CONFIG=
 assert_eq    "no old config -> the example, copied from the plugin root with mode 600" \
     "hint: mkdir -p \"$NEWH/.config/mesh\" && (cd \"$(cd "$TESTS_DIR/../../.." && pwd)\" && cp config.example.yaml \"$NEWH/.config/mesh/config.yaml\") && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
     "$(grep '^hint:' <<<"$OUT")"
+# Same branch with a slashless MESH_CONFIG, run from an empty directory: config.yaml names a file
+# there, so the directory to create is "." — ${CONFIG_PATH%/*} left the name itself, and the
+# hint's mkdir -p turned the config path into a directory. The cd goes around run_probe, never
+# into a subshell with it: that would strand OUT.
+SLASHWD="$(mktemp -d "$WORK/cwd-XXXXXX")"
+HERE="$PWD"
+cd "$SLASHWD" || exit 1
+run_probe none HOME="$NEWH" MESH_CONFIG=config.yaml
+cd "$HERE" || exit 1
+assert_match "slashless MESH_CONFIG -> the hint creates \".\", not the config's name" \
+    "hint: mkdir -p \".\" && (cd " "$OUT"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
 # there is no network verdict to qualify, so the note would point at a marker that is not on the
