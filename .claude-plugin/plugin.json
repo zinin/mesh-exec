@@ -1,6 +1,6 @@
 {
   "name": "mesh-exec",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "displayName": "Mesh Exec",
   "description": "Run a prompt through another model's CLI — Codex, Gemini, Grok, Claude Code, or alt-provider models via claude -p — with logging, a watchdog and run directories",
   "author": {

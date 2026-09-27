@@ -2,7 +2,7 @@
 
 All notable changes to mesh-exec (claude-mesh up to 0.15.0) will be documented here.
 
-## [Unreleased]
+## [0.16.0] - 2026-09-27
 
 ### Changed
 - **Renamed from claude-mesh to mesh-exec** and cut down to one job: running prompts through
