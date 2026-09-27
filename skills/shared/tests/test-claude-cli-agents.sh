@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Presence contract for the Grok-host Claude CLI wrappers (spec §4).
+# Contract for the mesh-exec wrapper agents and exec skills.
 #
-# claude-code-reviewer / claude-executor dispatch official `claude -p` via
-# ext-claude-exec HOST_CLAUDE=1. Catalog aliases (opus, fable), no tooling
-# constraint, run dirs under runs/claude/. Task 6 appends dual-path asserts
-# for all ten wrappers; this file starts with the three new paths only so
-# Test 6 in test-command-sync.sh stays grok-specific.
+# claude-executor dispatches official `claude -p` via ext-claude-exec HOST_CLAUDE=1:
+# catalog aliases (opus, fable), run dirs under runs/claude/. The reviewer half of
+# this file moved to the mesh-review plugin together with the reviewers.
 set -u
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$TESTS_DIR/../../.." && pwd)"
@@ -36,28 +34,18 @@ assert_ge() {
     fi
 }
 
-echo "=== Test: claude CLI reviewer, executor, review skill ==="
-assert_eq "reviewer agent exists" "1" "$([ -f "$REPO/agents/claude-code-reviewer.md" ] && echo 1 || echo 0)"
+echo "=== Test: claude CLI executor ==="
 assert_eq "executor agent exists" "1" "$([ -f "$REPO/agents/claude-executor.md" ] && echo 1 || echo 0)"
-assert_eq "review skill exists" "1" "$([ -f "$REPO/skills/claude-code-review/SKILL.md" ] && echo 1 || echo 0)"
-assert_eq "reviewer does not STOP when MODEL is omitted" "0" \
-    "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-code-reviewer.md")"
 assert_eq "executor does not STOP when MODEL is omitted" "0" \
     "$(grep -c 'ERROR: MODEL parameter is required on first line' "$REPO/agents/claude-executor.md")"
-assert_ge "reviewer still invokes skill when MODEL omitted" "1" \
-    "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-code-reviewer.md")"
 assert_ge "executor still invokes skill when MODEL omitted" "1" \
     "$(grep -c 'If the first line is not `MODEL=`, still invoke the skill' "$REPO/agents/claude-executor.md")"
-assert_ge "reviewer names HOST_CLAUDE" "1" \
-    "$(grep -c 'HOST_CLAUDE=1' "$REPO/skills/claude-code-review/SKILL.md")"
-assert_eq "review skill has no tooling-constraint section" "0" \
-    "$(grep -c '## Tooling constraint' "$REPO/skills/claude-code-review/SKILL.md")"
 
 echo ""
 echo "=== Test: wrapper dual-path invoke + Grok wait ==="
 AGENTS="$REPO/agents"
-# 8 pre-existing wrappers; claude-* already have the paragraph from Task 5.
-WRAPPERS="codex-code-reviewer.md codex-executor.md gemini-code-reviewer.md gemini-executor.md grok-code-reviewer.md grok-executor.md ext-claude-code-reviewer.md ext-claude-executor.md claude-code-reviewer.md claude-executor.md"
+# The five executor wrappers; the reviewer wrappers are checked in mesh-review.
+WRAPPERS="codex-executor.md gemini-executor.md grok-executor.md ext-claude-executor.md claude-executor.md"
 forbid=0
 for f in $WRAPPERS; do
     grep -q 'Do NOT read SKILL.md' "$AGENTS/$f" && forbid=$((forbid+1))
@@ -75,15 +63,15 @@ echo "=== Test: empty-SKILL_BASE else-branch is in the fence ==="
 # Prose telling the LLM to rewrite is not enough: the executable fence must
 # contain the find fallback. Every resolve-plugin-root.sh call via $SKILL_BASE
 # must sit in `if [ -n "$SKILL_BASE" ]`.
-SKILLS_WITH_RESOLVER="claude-code-review ext-claude-exec ext-claude-code-review codex-exec codex-code-review gemini-exec gemini-code-review grok-exec grok-code-review mesh-design-review"
+SKILLS_WITH_RESOLVER="ext-claude-exec codex-exec gemini-exec grok-exec"
 mismatch=0
 for s in $SKILLS_WITH_RESOLVER; do
     f="$REPO/skills/$s/SKILL.md"
     n_resolve="$(grep -c 'bash "$SKILL_BASE/../shared/resolve-plugin-root.sh"' "$f" || true)"
     n_if="$(grep -c 'if \[ -n "\$SKILL_BASE" \]; then' "$f" || true)"
-    n_find="$(grep -c 'claude-mesh\*/skills/shared/config-loader.sh' "$f" || true)"
+    n_find="$(grep -c 'mesh-exec\*/skills/shared/config-loader.sh' "$f" || true)"
     n_installed="$(grep -c 'installed-plugins' "$f" || true)"
-    if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -lt "$n_if" ]; then
+    if [ "$n_resolve" != "$n_if" ] || [ "$n_find" -ne $((3 * n_if)) ]; then
         mismatch=$((mismatch+1))
         echo "    mismatch $s: resolve=$n_resolve if=$n_if find=$n_find"
     fi
@@ -112,26 +100,6 @@ assert_ge "HOST_CLAUDE path rejects :/@ before mkdir" "1" \
 assert_ge "session stamp falls back to GROK_SESSION_ID" "1" \
     "$(grep -c 'GROK_SESSION_ID' "$REPO/skills/ext-claude-exec/SKILL.md")"
 
-echo ""
-echo "=== Test: Grok Read of *-exec searches installed-plugins first ==="
-# Agent defs already find review SKILL.md under installed-plugins. The next hop —
-# review skill → exec SKILL.md — still opened ~/.claude/plugins first (measured
-# 2026-09-01: cache 0.12.0 has no HOST_CLAUDE). The no-Skill-tool paragraph must
-# name installed-plugins before .claude/plugins.
-REVIEW_SKILLS="claude-code-review ext-claude-code-review codex-code-review gemini-code-review grok-code-review"
-read_stale=0
-for s in $REVIEW_SKILLS; do
-    f="$REPO/skills/$s/SKILL.md"
-    para="$(awk '/If this host has no Skill tool/,/Following the skill/' "$f")"
-    # Byte offset, not line number: all three finds live on one continuation line.
-    inst_pos=$(printf '%s' "$para" | grep -bo 'installed-plugins' | head -1 | cut -d: -f1)
-    claude_pos=$(printf '%s' "$para" | grep -bo '\.claude/plugins' | head -1 | cut -d: -f1)
-    if [ -z "$inst_pos" ] || [ -z "$claude_pos" ] || [ "$inst_pos" -ge "$claude_pos" ]; then
-        read_stale=$((read_stale+1))
-        echo "    stale $s: installed-plugins pos=${inst_pos:-none} .claude pos=${claude_pos:-none}"
-    fi
-done
-assert_eq "every review→exec Read searches installed-plugins before .claude/plugins" "0" "$read_stale"
 
 echo ""
 echo "=== Test: ext-claude-exec launch fences re-check MODEL / HOST_CLAUDE against Step 1 ==="
@@ -185,16 +153,27 @@ ELSE_CHAIN="$(awk '/find "\$HOME"\/\.grok\/installed-plugins/ {print; getline; p
 assert_eq "extracted a 3-line else-chain from ext-claude-exec" "3" \
     "$(printf '%s\n' "$ELSE_CHAIN" | grep -c .)"
 TDIR=$(mktemp -d)
-mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared"
-: > "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh"
+mkdir -p "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared"
+: > "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared/config-loader.sh"
 GOT=$(HOME="$TDIR/home" GROK_SESSION_ID="grok-session-1" bash -c 'set -euo pipefail
 _LOADER=""
 '"$ELSE_CHAIN"'
 printf %s "$_LOADER"'); RC=$?
 assert_eq "skill else-chain ran cleanly under set -e" "0" "$RC"
 assert_eq "skill else-chain falls through to the Claude cache" \
-    "$TDIR/home/.claude/plugins/cache/zinin/claude-mesh/0.12.0/skills/shared/config-loader.sh" "$GOT"
+    "$TDIR/home/.claude/plugins/cache/zinin/mesh-exec/0.12.0/skills/shared/config-loader.sh" "$GOT"
 rm -rf "$TDIR"
+# Review Focus 2 on the Grok path: claude-mesh copies carry the same marker in all three roots.
+OHOME=$(mktemp -d)
+for p in .grok/installed-plugins/claude-mesh-aabbccdd .claude/plugins/cache/zinin/claude-mesh/9.9.9 .grok/plugins/cache/zinin/claude-mesh/9.9.9; do
+    mkdir -p "$OHOME/$p/skills/shared"; : > "$OHOME/$p/skills/shared/config-loader.sh"
+done
+GOT=$(HOME="$OHOME" GROK_SESSION_ID="grok-session-1" bash -c 'set -euo pipefail
+_LOADER=""
+'"$ELSE_CHAIN"'
+printf %s "$_LOADER"')
+assert_eq "skill else-chain never takes a claude-mesh copy" "" "$GOT"
+rm -rf "$OHOME"
 
 echo ""
 echo "=== Test: every loader-find assignment is guarded against find rc=1 ==="
@@ -207,9 +186,60 @@ while IFS= read -r line; do
     unprotected=$((unprotected+1))
     echo "    unguarded: $line"
 done < <(grep -h 'find "$HOME"/.*/config-loader.sh' \
-    "$REPO"/skills/*/SKILL.md "$REPO"/commands/*.md \
+    "$REPO"/skills/*/SKILL.md \
     "$REPO"/skills/shared/resolve-plugin-root.sh || true)
 assert_eq "every loader find assignment ends with || true" "0" "$unprotected"
+
+echo ""
+echo "=== Test: codex-/gemini-/grok-exec soft gates when config.yaml is missing ==="
+# Loader rc=2 is "no config.yaml at all". The gate names the file through config-path, passes
+# the loader's own lines on — with the old claude-mesh config still in place they carry the
+# command that moves it — and the run continues on defaults (rc 0). A config without the
+# engine's block, a configured block and any other loader failure keep their old outcome and
+# text. Each gate is extracted from its SKILL.md and executed: against the real loader in a
+# scratch HOME for rc=2, against a stub loader for the rest.
+GHOME=$(mktemp -d)
+OLDCFG="$GHOME/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+NEWCFG="$GHOME/.config/mesh/config.yaml"
+mkdir -p "${OLDCFG%/*}"; printf 'providers: {}\n' > "$OLDCFG"
+STUB="$GHOME/stub-loader.sh"
+cat > "$STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    config-path) echo "/stub/config.yaml" ;;
+    get-flag)
+        [ "${STUB_RC:-0}" = 0 ] || { echo "config-loader: stub failure" >&2; exit "$STUB_RC"; }
+        echo "${STUB_FLAG:-1}" ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+for e in codex gemini grok; do
+    GATE="$(awk '/^# Soft gate:/ {s=1} s && /^if \[ -x "\$LOADER" \]; then$/ {g=1} g {print} g && /^fi$/ {exit}' \
+        "$REPO/skills/$e-exec/SKILL.md")"
+    OUT=$(env -u MESH_CONFIG -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$GHOME" \
+        LOADER="$REPO/skills/shared/config-loader.sh" bash -c "$GATE" 2>&1); RC=$?
+    assert_eq "$e-exec: no config.yaml -> a WARN naming its path, and the run goes on" \
+        "0|WARN: no config.yaml at $NEWCFG — continuing on defaults. It is user-owned; agents never create or edit it. The loader says:" \
+        "$RC|$(printf '%s\n' "$OUT" | head -1)"
+    assert_eq "$e-exec: …followed by the loader's move command" "1" \
+        "$(printf '%s\n' "$OUT" | grep -cxF "  mkdir -p \"${NEWCFG%/*}\" && cp \"$OLDCFG\" \"$NEWCFG\" && chmod 600 \"$NEWCFG\"")"
+    OUT=$(STUB_FLAG=0 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    assert_eq "$e-exec: a config without the $e: block keeps the old WARN" \
+        "0|WARN: $e: block not configured in config.yaml ($e uses its own auth — continuing)" "$RC|$OUT"
+    OUT=$(STUB_FLAG=1 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    if [ "$e" = grok ]; then WANT="0|"; else WANT="0|OK: has_$e configured"; fi
+    assert_eq "$e-exec: a configured block passes as before" "$WANT" "$RC|$OUT"
+    OUT=$(STUB_RC=1 LOADER="$STUB" bash -c "$GATE" 2>&1); RC=$?
+    if [ "$e" = grok ]; then
+        assert_eq "grok-exec: a grok: section that does not validate still STOPs" \
+            "1|STOP: the grok: section in config.yaml does not validate — config.yaml is user-owned; agents never edit it. The loader says:" \
+            "$RC|$(printf '%s\n' "$OUT" | head -1)"
+    else
+        assert_eq "$e-exec: any other loader failure keeps the old WARN" \
+            "0|WARN: $e: block not configured in config.yaml ($e uses its own auth — continuing)" "$RC|$OUT"
+    fi
+done
+rm -rf "$GHOME"
 
 echo ""
 echo "=== Summary: $PASS passed, $FAIL failed ==="

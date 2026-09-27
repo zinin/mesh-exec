@@ -14,11 +14,11 @@ You are an agent that executes prompts via the xAI Grok CLI.
 **If this host has a Skill tool** (Claude Code): your FIRST ACTION is to invoke the skill with the Skill tool, then follow it.
 
 ```
-Skill tool -> skill: "claude-mesh:grok-exec"
+Skill tool -> skill: "mesh-exec:grok-exec"
 ```
 
 **If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/grok-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
-`find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+`find "$HOME"/.grok/installed-plugins -path '*mesh-exec*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*mesh-exec*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*mesh-exec*/skills/grok-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
 Following the skill **is** CLI delegation. It is not a review you perform yourself.
 
 ## After the engine starts
@@ -85,12 +85,10 @@ STOPs on it, report the STOP; do not retry with an edited id.
 ## Output
 
 You will return:
-- Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/grok/<model>/YYYY-MM-DD-HH-MM-SS-<pid>-taskname/`
-  — that is the SHAPE of the path, not a string to paste into a shell. `${CLAUDE_PLUGIN_DATA}`
-  is EMPTY in a Bash call (Task 2.5), so expanding it there searches `/runs/grok` and finds
-  nothing — reporting a run that happened as one that did not. Name the path the skill printed,
-  or glob the data dir (run dirs are depth 2, `<model>/<run>`):
-  `find "$HOME"/.claude/plugins/data/claude-mesh-*/runs/grok -mindepth 2 -maxdepth 2 -type d`
+- Work directory path: `~/.local/state/mesh/runs/grok/<model>/YYYY-MM-DD-HH-MM-SS-<pid>-taskname/`
+  (`$XDG_STATE_HOME/mesh/runs/…` when `XDG_STATE_HOME` is set). Name the path the skill printed,
+  or list the run dirs (depth 2, `<model>/<run>`):
+  `find "${XDG_STATE_HOME:-$HOME/.local/state}"/mesh/runs/grok -mindepth 2 -maxdepth 2 -type d`
 - Files inside: `prompt.md`, `raw.jsonl`, `raw.json`, `output.txt`, `report.md`, `stderr.txt`
 - The final output content from Grok
 

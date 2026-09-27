@@ -125,7 +125,10 @@ mkfarm() {              # mkfarm <dir> [binary-to-omit ...]
 
 # Each run gets a private data dir (so the suite never reads the developer's ~/.claude config)
 # and a private TMPDIR (so exported env files, which carry tokens, cannot leak into shared /tmp
-# and can be counted afterwards).
+# and can be counted afterwards). HOME is that dir too, and XDG_CONFIG_HOME is dropped: with no
+# config.yaml the loader searches $HOME/.claude/plugins/data for the old claude-mesh config, and
+# a case that blanks MESH_CONFIG resolves ${XDG_CONFIG_HOME:-$HOME/.config}/mesh/config.yaml. On
+# a developer's machine both are the real config, and the old one's path would decide the hint.
 #
 # run_probe assigns OUT / ERR / RC / CFG_DIR as globals and is called as a STANDALONE command —
 # never as OUT="$(run_probe …)". A command substitution would strand the assignments in its
@@ -184,7 +187,8 @@ run_probe() {           # run_probe <fixture-basename|none> [VAR=value ...]
         "$WORK"/*) [ -L "$grok_bin" ] || keep_grok=1 ;;
     esac
     [ "$keep_grok" = 1 ] || [ -z "$grok_bin" ] || probe_path="$WORK/grokskip:$probe_path"
-    OUT="$(env CLAUDE_PLUGIN_DATA="$CFG_DIR" TMPDIR="$CFG_DIR" \
+    OUT="$(env -u XDG_CONFIG_HOME HOME="$CFG_DIR" \
+               MESH_CONFIG="$CFG_DIR/config.yaml" XDG_STATE_HOME="$CFG_DIR" TMPDIR="$CFG_DIR" \
                PREFLIGHT_GIT_BIN="$WORK/gitfast/git" \
                PREFLIGHT_CURL_BIN="$WORK/curlfast/curl" PATH="$probe_path" \
                "${env_rest[@]}" bash "$SCRIPT" 2>"$errf")"
@@ -307,7 +311,7 @@ mkdir -p "$WORK/mktempshim"
 MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
 cat > "$WORK/mktempshim/mktemp" <<SH
 #!/usr/bin/env bash
-for a in "\$@"; do case "\$a" in claude-mesh-cfg-*) exit 1 ;; esac; done
+for a in "\$@"; do case "\$a" in mesh-cfg-*) exit 1 ;; esac; done
 exec $MKTEMP_REAL "\$@"
 SH
 chmod +x "$WORK/mktempshim/mktemp"
@@ -471,7 +475,7 @@ assert_match "…and says the network was skipped" "skipped by PREFLIGHT_SKIP_NE
 run_probe valid-full.yaml PREFLIGHT_CURL_BIN="$SHIM/curl" PATH="$SHIM:$PATH" SHIM_HTTP_CODE=200
 assert_no_match "provider token never printed"        "tkn-zai" "$OUT"
 assert_no_match "…and never reaches stderr either"    "tkn-zai" "$ERR"
-LEFT="$(find "$CFG_DIR" -name 'claude-mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
+LEFT="$(find "$CFG_DIR" -name 'mesh-env-*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "exported env files removed" 0 "$LEFT"
 
 echo "== Task 3: CLI and git rows =="
@@ -951,7 +955,10 @@ assert_match "…and is named with its verdict"     "zai/glm (NO-NETWORK)" "$UNA
 run_probe none
 assert_match "no config -> nothing selectable"       "SUMMARY available: —" "$OUT"
 assert_match "…claude named with the reason"         "claude (config.yaml required" "$OUT"
-assert_match "…and the one-line fix is hinted"       "hint: cp config.example.yaml" "$OUT"
+assert_match "…and the one-line fix is hinted"       "hint: mkdir -p" "$OUT"
+# The needle is the example as cp's source. The never-overwrite checks below reuse it, and this
+# match is what keeps them from passing vacuously when the hint's form changes.
+assert_match "…which copies the example into place"   "config.example.yaml\" \"" "$OUT"
 # The presets cannot be read without a config, and saying so is not the same as saying the
 # preset is empty — the loader was never asked.
 assert_match "…and the preset lines degrade, not crash" "SUMMARY defaults design_review: —" "$OUT"
@@ -960,7 +967,7 @@ assert_match "…both of them"                            "SUMMARY defaults code
 # `CONFIG_STATUS != OK` is THREE states, and the hint is a literally executable command. Only
 # the MISSING one above may say `cp config.example.yaml …`: in the other two a real config.yaml
 # exists, that command OVERWRITES it — provider tokens and all — and config.yaml is user-owned
-# (commands/mesh-review.md Step 1: agents never edit it). The generated prompts tell a session
+# (mesh-review/commands/mesh-review.md Step 1: agents never edit it). The generated prompts tell a session
 # to print this table verbatim, so the wrong hint here is a destructive instruction with the
 # probe's authority behind it.
 run_probe invalid-no-providers.yaml
@@ -968,7 +975,7 @@ assert_eq   "rejected config -> nothing selectable" "SUMMARY available: —" "$(
 assert_match "…claude named with the rejection, not with a missing file" "claude (config.yaml is rejected" "$OUT"
 assert_match "…and the hint says to EDIT the file"   "hint: edit"        "$OUT"
 assert_match "…because it is the operator's, not ours" "do NOT overwrite" "$OUT"
-assert_no_match "…never offering to overwrite a real config" "cp config.example.yaml" "$OUT"
+assert_no_match "…never offering to overwrite a real config" "config.example.yaml\" \"" "$OUT"
 
 # UNKNOWN is the worst of the three to get wrong: the loader never ran, so the config may well
 # be perfect and the only thing missing is yq. Naming what to install matters here too: both
@@ -978,7 +985,7 @@ assert_eq   "unevaluated config -> nothing selectable either" "SUMMARY available
 assert_match "…claude says exactly that, and not that a file is missing" "claude (config state could not be evaluated" "$OUT"
 assert_match "…the hint names the tool the rows above reported" "install a yq that emits JSON" "$OUT"
 assert_match "…and says the config itself was never read"       "was never read"  "$OUT"
-assert_no_match "…never offering to overwrite an unread config" "cp config.example.yaml" "$OUT"
+assert_no_match "…never offering to overwrite an unread config" "config.example.yaml\" \"" "$OUT"
 
 # UNKNOWN has TWO causes and one hint line, so the hint has to know which one it is advising
 # about. It used to be a `*)` arm prescribing yq/jq for both — an operator whose TMPDIR is
@@ -993,7 +1000,50 @@ assert_match "…and the hint points at TMPDIR"                   "hint: make TM
 assert_no_match "…not at a toolchain that is already installed" "install the loader toolchain" "$OUT"
 assert_no_match "…and never at yq"                              "install a yq that emits JSON" "$OUT"
 assert_match "…while still saying the config was never read"    "was never read"  "$OUT"
-assert_no_match "…and never offering to overwrite it"           "cp config.example.yaml" "$OUT"
+assert_no_match "…and never offering to overwrite it"           "config.example.yaml\" \"" "$OUT"
+
+# MISSING has a second face since the rename. Up to 0.15.0 the config lived in Claude Code's
+# plugin-data dir, so on the first run after the update the tokens are still there while
+# ~/.config/mesh/config.yaml does not exist yet, and `cp config.example.yaml` would start a
+# blank config beside the one that holds them. The loader names the old copy and prints the
+# command that moves it (config-loader.sh, load_or_die); the hint has to be that command.
+# MESH_CONFIG is blanked so the loader resolves its default path under the scratch HOME, as a
+# real first run does. The old config is a dummy: two lines, one of them a marker.
+OLDH="$(mktemp -d "$WORK/home-old-XXXXXX")"
+OLDCFG="$OLDH/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+mkdir -p "${OLDCFG%/*}"
+printf 'providers: {}\nmodels: []   # dummy-old-config-body\n' > "$OLDCFG"
+run_probe none HOME="$OLDH" MESH_CONFIG=
+assert_eq    "old claude-mesh config, no new one -> still MISSING" MISSING "$(field config "$OUT")"
+assert_match "…and the hint moves the old config into place" \
+    "cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\"" "$OUT"
+assert_no_match "…never a blank example in its stead" "config.example.yaml\" \"" "$OUT"
+assert_eq    "…the loader's own command, verbatim, after a lead naming the old copy" \
+    "hint: the claude-mesh config is still at $OLDCFG — move it: mkdir -p \"$OLDH/.config/mesh\" && cp \"$OLDCFG\" \"$OLDH/.config/mesh/config.yaml\" && chmod 600 \"$OLDH/.config/mesh/config.yaml\"" \
+    "$(grep '^hint:' <<<"$OUT")"
+# Paths only: nothing on either stream may come from inside the old file.
+assert_no_match "…and none of the old config's contents, on either stream" \
+    "dummy-old-config-body" "$OUT$ERR"
+
+# The other half of the same branch: an empty HOME has nothing to move, and the advice stays
+# the example, copied from the plugin root to the path the loader resolves, with mode 600.
+NEWH="$(mktemp -d "$WORK/home-new-XXXXXX")"
+run_probe none HOME="$NEWH" MESH_CONFIG=
+assert_eq    "no old config -> the example, copied from the plugin root with mode 600" \
+    "hint: mkdir -p \"$NEWH/.config/mesh\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"$NEWH/.config/mesh/config.yaml\" && chmod 600 \"$NEWH/.config/mesh/config.yaml\" — the review skills need it even for the built-in claude reviewer" \
+    "$(grep '^hint:' <<<"$OUT")"
+# Same branch with a slashless MESH_CONFIG, run from an empty directory: config.yaml names a file
+# there. ${CONFIG_PATH%/*} left the name itself, so the hint's mkdir -p made the config path a
+# directory, and a cp run after a cd into the plugin root put the copy there instead. The test's
+# own cd wraps the standalone run_probe call: inside a subshell it would strand OUT.
+SLASHWD="$(mktemp -d "$WORK/cwd-XXXXXX")"
+HERE="$PWD"
+cd "$SLASHWD" || exit 1
+run_probe none HOME="$NEWH" MESH_CONFIG=config.yaml
+cd "$HERE" || exit 1
+assert_eq    "slashless MESH_CONFIG -> mkdir -p \".\", and the copy lands in the working directory" \
+    "hint: mkdir -p \".\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\" — the review skills need it even for the built-in claude reviewer" \
+    "$(grep '^hint:' <<<"$OUT")"
 
 # The note qualifies "(UNKNOWN)" markers. With no usable config every entry reads (SKIPPED) and
 # there is no network verdict to qualify, so the note would point at a marker that is not on the
@@ -1166,24 +1216,24 @@ printf '#!/usr/bin/env bash\nsleep 3\nexit 1\n' > "$WORK/curlstall/curl"
 chmod +x "$WORK/curlstall/curl"
 ICFG="$(mktemp -d "$WORK/int-XXXXXX")"
 cp "$TESTS_DIR/fixtures/valid-claude-models.yaml" "$ICFG/config.yaml"
-env CLAUDE_PLUGIN_DATA="$ICFG" TMPDIR="$ICFG" \
+env MESH_CONFIG="$ICFG/config.yaml" XDG_STATE_HOME="$ICFG" TMPDIR="$ICFG" \
     PREFLIGHT_CURL_BIN="$WORK/curlstall/curl" PATH="$WORK/curlstall:$WORK/grokskip:$PATH" \
     bash "$SCRIPT" >/dev/null 2>&1 &
 IPID=$!
 IW=0
 while [ "$IW" -lt 150 ]; do
-    find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -q . && break
+    find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -q . && break
     kill -0 "$IPID" 2>/dev/null || break
     sleep 0.1; IW=$((IW+1))
 done
 assert_eq   "the token file exists while the probe is mid-flight" \
-            1 "$([ "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c .)" -ge 1 ] && echo 1 || echo 0)"
+            1 "$([ "$(find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -c .)" -ge 1 ] && echo 1 || echo 0)"
 kill -TERM "$IPID" 2>/dev/null
 wait "$IPID" 2>/dev/null; IRC=$?
 # 143, not 0: "every verdict exits 0" covers completed runs, and an interrupt is not one.
 assert_eq   "an interrupted probe exits 143, never 0"  143 "$IRC"
 assert_eq   "…and the token file is gone"              0 \
-            "$(find "$ICFG" -name 'claude-mesh-env-*' 2>/dev/null | grep -c . | tr -d ' ')"
+            "$(find "$ICFG" -name 'mesh-env-*' 2>/dev/null | grep -c . | tr -d ' ')"
 # The directory is what makes the guarantee reachable at all — the loader creates the file
 # inside the command substitution, so a name-only trap has nothing to delete until export
 # returns. If a future loader stops honouring TMPDIR, this is the assertion that fails.

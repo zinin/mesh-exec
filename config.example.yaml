@@ -1,7 +1,8 @@
 # ============================================================================
-# claude-mesh — example configuration
+# mesh — example configuration (mesh-exec and mesh-review read this one file)
 # ============================================================================
-# Copy this file to  ~/.claude/plugins/data/claude-mesh-zinin/config.yaml  and edit.
+# Copy this file to  ~/.config/mesh/config.yaml  and edit; chmod 600 — it will hold tokens.
+# ($XDG_CONFIG_HOME/mesh/config.yaml when XDG_CONFIG_HOME is set; MESH_CONFIG overrides the path.)
 #
 # WARNING: the live config.yaml contains plaintext API tokens once edited.
 #          DO NOT commit it to any git repo. Only this *.example.yaml (with
@@ -167,7 +168,7 @@ claude:
   # does not support is not caught here: the dispatch fails at runtime instead.
   #
   # COST: N models = N full reviews. Three Claude models plus codex plus five
-  # external models is nine reviewers for one /mesh-review.
+  # external models is nine reviewers for one /mesh-review:mesh-review.
   #
   # Omit this section (or leave the list empty) and the built-in claude reviewer
   # behaves exactly as before: exactly ONE reviewer, on runtime.dispatch_model, or
@@ -201,11 +202,11 @@ grok:
   # What belongs here: the names THIS MACHINE's grok CLI accepts after `-m`, which is not the
   # same set as "the grok family" — run `grok models` to see them. The catalog is yours: it may
   # well list models proxied in from other vendors (deepseek-*, glm-*, minimax-*, kimi-*,
-  # codex-*), and your own CLI default may be one of those. claude-mesh does not police the
+  # codex-*), and your own CLI default may be one of those. mesh-exec does not police the
   # names and cannot: a model your CLI does not accept is not caught here, it fails that
   # reviewer's run instead.
   #
-  # Still, prefer keeping this catalog to the grok family. claude-mesh cannot tell that a grok
+  # Still, prefer keeping this catalog to the grok family. mesh-exec cannot tell that a grok
   # alias and one of your ext-claude models (section 2) are the same model underneath —
   # `grok models` prints names, never the provider behind them — so listing both makes ONE
   # opinion count twice in the attribution table.
@@ -263,11 +264,11 @@ grok:
 # ============================================================================
 # (4) defaults — preset reviewer sets for the "default" command argument
 # ============================================================================
-# Consumed when you run `/mesh-review default` / `/mesh-design-review default`.
+# Consumed by the mesh-review plugin: `/mesh-review:mesh-review default` / `/mesh-review:mesh-design-review default`.
 # The whole `defaults:` section is [optional]; each preset and each field inside
 # is [optional] too.
 defaults:
-  code_review:                                 # used by: /mesh-review default
+  code_review:                                 # used by: /mesh-review:mesh-review default
     builtin: [native, claude, codex, gemini, grok]
                                                # [optional] list; subset of { native, claude, codex, gemini, grok }.
                                                #   native  — host models. On Claude Code this collapses into
@@ -323,7 +324,7 @@ defaults:
                                                #   NOTE: team mode is still experimental and currently
                                                #         works poorly — prefer 'background' (the default).
 
-  design_review:                               # used by: /mesh-design-review default
+  design_review:                               # used by: /mesh-review:mesh-design-review default
     builtin: [native, claude, codex, gemini, grok]
                                                # [optional] same valid set { native, claude, codex, gemini, grok }.
     native_models: [grok-4.6, glm-5-3, kimi-k3]
@@ -343,17 +344,14 @@ defaults:
 # ============================================================================
 runtime:
   default_run_mode: background                 # [optional] valid: background | team
-                                               #   Pre-selects the run-mode choice in the /mesh-review UI.
+                                               #   Pre-selects the run-mode choice in the /mesh-review:mesh-review UI.
                                                #   Keep 'background': team mode is experimental and
                                                #   currently unreliable; background is the safe default.
 
-  # /do-plan with no argument uses this as its STOP threshold (in tokens).
-  do_plan_default_stop_tokens: 250000          # [optional] positive integer, must be >= 150000
-                                               #   (the check-context-size.sh hook emits nothing below the
-                                               #   150k milestone, so a lower STOP could never fire).
-                                               #   `/do-plan <N>` overrides this for a single invocation.
+  # do-plan's STOP threshold moved to the session-relay plugin: stop_tokens in
+  # ~/.config/session-relay/config.yaml. A do_plan_default_stop_tokens key left here is ignored.
 
-  # /mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/grok/ext-claude)
+  # /mesh-review:mesh-review Step 6.0 delegation guard: if a wrapper reviewer (codex/gemini/grok/ext-claude)
   # flips to self-review (no run dir) or stalls mid-flight, re-dispatch it up to this many
   # rounds. Three verdicts are never retried, because a second identical run cannot differ:
   # BROKEN (the engine finished having done no work — swap the model instead), DEGRADED (the
@@ -361,7 +359,8 @@ runtime:
   # outside the run signalled it — the same launch is killed the same way).
   max_redispatch: 1                            # [optional] positive integer. default 1
 
-  # Model for subagents dispatched by /do-plan, /mesh-review, /mesh-design-review.
+  # Model for subagents dispatched by mesh-exec's wrapper agents and by mesh-review
+  # (/mesh-review:mesh-review, /mesh-review:mesh-design-review). do-plan has its own, in session-relay.
   # [optional] If set, those commands pass `model: "<value>"` on nearly every dispatch —
   # the exception is built-in claude reviewers running on an explicitly selected Claude
   # model (see `claude:` above), which carry that model instead and ignore this value.
@@ -371,15 +370,12 @@ runtime:
   # (e.g. opus, sonnet, fable, claude-fable-5, Bedrock us.anthropic.…-v2:0, Vertex
   # claude-opus-4@date). No enum is enforced — flip it freely when a model opens or
   # closes, no plugin release needed. Charset: [A-Za-z0-9._:@-] (first char alphanumeric).
-  # On Grok, /do-plan additionally checks the live `grok models` catalog: a slug that is
-  # not a host model (typical: opus) is dropped and subagents inherit the session
-  # (model and reasoning effort — spawn_subagent has no effort field).
   # dispatch_model: opus
 
   timeouts:                                    # all [optional]; each must be a positive integer (seconds).
     single_run_sec: 1800                       # one `claude -p` attempt (wrapped in `timeout`). default 1800
     stall_sec: 600                             # no output for this long → supervised mode kills and retries;
-                                               #   the /mesh-review and /mesh-design-review watcher
+                                               #   the mesh-review watcher
                                                #   (shared/watch-runs.sh) reports the run SILENT. default 600.
                                                #   The watcher floors this at 600: codex-exec, gemini-exec and
                                                #   grok-exec hardcode HARD_ZERO_TIMEOUT=600 and ignore this key,

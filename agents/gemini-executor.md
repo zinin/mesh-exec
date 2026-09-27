@@ -13,11 +13,11 @@ You are an agent that executes prompts via Google Gemini CLI.
 **If this host has a Skill tool** (Claude Code): your FIRST ACTION is to invoke the skill with the Skill tool, then follow it.
 
 ```
-Skill tool -> skill: "claude-mesh:gemini-exec"
+Skill tool -> skill: "mesh-exec:gemini-exec"
 ```
 
 **If this host has no Skill tool** (Grok Build): `Read` the plugin's `skills/gemini-exec/SKILL.md` and follow every step. Plugin root: `$CLAUDE_PLUGIN_ROOT` or `$GROK_PLUGIN_ROOT` if set to an existing directory; otherwise
-`find "$HOME"/.grok/installed-plugins -path '*claude-mesh*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*claude-mesh*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*claude-mesh*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
+`find "$HOME"/.grok/installed-plugins -path '*mesh-exec*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.claude/plugins -path '*mesh-exec*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1` — and, only if that prints nothing, `find "$HOME"/.grok/plugins -path '*mesh-exec*/skills/gemini-exec/SKILL.md' 2>/dev/null | sort -V | tail -1`.
 Following the skill **is** CLI delegation. It is not a review you perform yourself.
 
 ## After the engine starts
@@ -54,7 +54,7 @@ Optional parameters:
 ## Output
 
 You will return:
-- Work directory path: `${CLAUDE_PLUGIN_DATA}/runs/gemini/YYYY-MM-DD-HH-MM-SS-taskname/`
+- Work directory path: `~/.local/state/mesh/runs/gemini/YYYY-MM-DD-HH-MM-SS-taskname/`
 - Files inside: `prompt.md`, `log.jsonl`, `output.txt`, `report.md`, `stderr.txt` (supervised mode writes `raw.jsonl` instead of `log.jsonl`)
 - The final output content from Gemini
 

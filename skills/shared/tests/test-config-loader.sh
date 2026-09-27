@@ -56,17 +56,75 @@ echo "=== Test 1: missing config file ==="
 # yaml-malformed / validator / env errors. All other commands (validate/export)
 # propagate the rc=2 as their own exit code.
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA=/nonexistent "$LOADER" validate 2>"$ERR"
+NOHOME=$(mktemp -d)   # HOME without a claude-mesh config: the machine's own must not leak in
+env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$NOHOME" MESH_CONFIG=/nonexistent/config.yaml "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits with rc=2 (distinct 'config not found')" "2" "$RC"
-assert_stderr_contains "mentions missing config.yaml" "config.yaml not found" "$ERR"
-rm -f "$ERR"
+assert_stderr_contains "names the missing file" "config.yaml not found at /nonexistent/config.yaml" "$ERR"
+assert_stderr_contains "no old config: generic advice" "Copy config.example.yaml" "$ERR"
+assert_stderr_contains "…as a command that sets mode 600" "chmod 600 \"/nonexistent/config.yaml\"" "$ERR"
+rm -rf "$ERR" "$NOHOME"
+
+echo "=== Test 1b: an old claude-mesh config gets the exact move command ==="
+# First run after the rename: the config still sits in Claude Code's plugin-data dir.
+H=$(mktemp -d)
+mkdir -p "$H/.claude/plugins/data/claude-mesh-zinin"
+cp "$FIXTURES/valid-minimal.yaml" "$H/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+ERR=$(mktemp)
+env -u MESH_CONFIG -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$H" "$LOADER" validate 2>"$ERR"
+RC=$?
+assert_exit "still rc=2: nothing is copied for the user" "2" "$RC"
+assert_stderr_contains "names the new path" "config.yaml not found at $H/.config/mesh/config.yaml" "$ERR"
+assert_stderr_contains "names the old copy" "claude-mesh config is still at $H/.claude/plugins/data/claude-mesh-zinin/config.yaml" "$ERR"
+assert_stderr_contains "prints the cp command" "cp \"$H/.claude/plugins/data/claude-mesh-zinin/config.yaml\" \"$H/.config/mesh/config.yaml\"" "$ERR"
+assert_eq_str "the new file was not created" "absent" "$([ -e "$H/.config/mesh/config.yaml" ] && echo present || echo absent)"
+rm -rf "$H" "$ERR"
+
+echo "=== Test 1b2: a slashless MESH_CONFIG gets mkdir -p \".\" in both commands ==="
+# MESH_CONFIG=config.yaml names a file in the working directory, so the parent to create is ".".
+# ${CONFIG_FILE%/*} left a slashless name as it was: the printed mkdir -p "config.yaml" turned the
+# config file into a directory. Both runs start in an empty directory, so no config.yaml is found.
+H=$(mktemp -d)
+WD=$(mktemp -d)
+mkdir -p "$H/.claude/plugins/data/claude-mesh-zinin"
+cp "$FIXTURES/valid-minimal.yaml" "$H/.claude/plugins/data/claude-mesh-zinin/config.yaml"
+ERR=$(mktemp)
+(cd "$WD" && env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$H" MESH_CONFIG=config.yaml "$LOADER" validate 2>"$ERR")
+RC=$?
+assert_exit "old config, slashless MESH_CONFIG: rc=2" "2" "$RC"
+assert_eq_str "…the move command creates \".\", not the config's name" \
+    "  mkdir -p \".\" && cp \"$H/.claude/plugins/data/claude-mesh-zinin/config.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\"" \
+    "$(grep -F 'mkdir -p' "$ERR")"
+rm -rf "$H/.claude"
+(cd "$WD" && env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$H" MESH_CONFIG=config.yaml "$LOADER" validate 2>"$ERR")
+RC=$?
+assert_exit "no old config, slashless MESH_CONFIG: rc=2" "2" "$RC"
+assert_eq_str "…the example command creates \".\" as well" \
+    "  mkdir -p \".\" && cp \"$(cd "$TESTS_DIR/../../.." && pwd)/config.example.yaml\" \"config.yaml\" && chmod 600 \"config.yaml\"" \
+    "$(grep -F 'mkdir -p' "$ERR")"
+rm -rf "$H" "$WD" "$ERR"
+
+echo "=== Test 1c: config-path and data-dir follow XDG and MESH_CONFIG ==="
+H=$(mktemp -d)
+assert_eq_str "config-path default" "$H/.config/mesh/config.yaml" \
+    "$(env -u MESH_CONFIG -u XDG_CONFIG_HOME HOME="$H" "$LOADER" config-path)"
+assert_eq_str "config-path under XDG_CONFIG_HOME" "$H/xdg/mesh/config.yaml" \
+    "$(env -u MESH_CONFIG HOME="$H" XDG_CONFIG_HOME="$H/xdg" "$LOADER" config-path)"
+assert_eq_str "MESH_CONFIG wins over XDG" "$H/other.yaml" \
+    "$(HOME="$H" XDG_CONFIG_HOME="$H/xdg" MESH_CONFIG="$H/other.yaml" "$LOADER" config-path)"
+assert_eq_str "data-dir default" "$H/.local/state/mesh" \
+    "$(env -u XDG_STATE_HOME HOME="$H" "$LOADER" data-dir)"
+assert_eq_str "data-dir under XDG_STATE_HOME" "$H/st/mesh" \
+    "$(HOME="$H" XDG_STATE_HOME="$H/st" "$LOADER" data-dir)"
+assert_eq_str "CLAUDE_PLUGIN_DATA no longer moves anything" "$H/.local/state/mesh" \
+    "$(env -u XDG_STATE_HOME HOME="$H" CLAUDE_PLUGIN_DATA="$H/plugin-data" "$LOADER" data-dir)"
+rm -rf "$H"
 
 echo "=== Test 2: valid minimal config ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits zero on valid config" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -75,7 +133,7 @@ echo "=== Test 3: invalid config (no providers) ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-no-providers.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on missing providers" "1" "$RC"
 assert_stderr_contains "names the issue" "providers" "$ERR"
@@ -85,7 +143,7 @@ echo "=== Test 4: model id without slash ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-no-slash.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "explains the slash requirement" 'must be "<provider>/<short>"' "$ERR"
@@ -95,7 +153,7 @@ echo "=== Test 5: model id references missing provider ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-missing-provider.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "names the missing provider" "missing provider" "$ERR"
@@ -105,7 +163,7 @@ echo "=== Test 6: model id with empty short ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-empty-short.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "explains empty short" "short name after .*/.* is empty" "$ERR"
@@ -117,7 +175,7 @@ echo "=== Test 7: codex.reasoning_level unknown (warn + pass through) ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits zero (unknown level warns, not dies)" "0" "$RC"
 assert_stderr_contains "warns about the unknown level" "reasoning_level: unknown value" "$ERR"
@@ -130,7 +188,7 @@ TDIR=$(mktemp -d)
 cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
 OUT=$(mktemp)
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
 RC=$?
 assert_exit "export exits zero despite unknown codex level" "0" "$RC"
 if grep -q -- "reasoning_level" "$ERR"; then
@@ -151,7 +209,7 @@ echo "=== Test 7c: get-codex unaffected by broken gemini section (scoped validat
 TDIR=$(mktemp -d)
 cp "$FIXTURES/broken-gemini-valid-codex.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>"$ERR")
+VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>"$ERR")
 RC=$?
 assert_exit "get-codex exits zero despite broken gemini section" "0" "$RC"
 if [ "$VAL" = "gpt-5.5|xhigh" ]; then
@@ -165,7 +223,7 @@ if grep -q -- "gemini" "$ERR"; then
 else
     PASS=$((PASS+1)); echo "  PASS: get-codex stderr silent on gemini"
 fi
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>/dev/null
 RC=$?
 assert_exit "validate (full lint) still rejects the broken gemini section" "1" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -174,7 +232,7 @@ echo "=== Test 7d: get-gemini unaffected by broken codex section (scoped validat
 TDIR=$(mktemp -d)
 cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-gemini 2>"$ERR")
+VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-gemini 2>"$ERR")
 RC=$?
 assert_exit "get-gemini exits zero despite broken codex section" "0" "$RC"
 if [ "$VAL" = "gemini-3.1-pro" ]; then
@@ -188,7 +246,7 @@ if grep -q -- "codex" "$ERR"; then
 else
     PASS=$((PASS+1)); echo "  PASS: get-gemini stderr silent on codex"
 fi
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>/dev/null
 RC=$?
 assert_exit "validate (full lint) still rejects the broken codex section" "1" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -201,7 +259,7 @@ for LVL in none minimal low medium high xhigh ultra; do
     sed "s/reasoning_level: extreme.*/reasoning_level: $LVL/" \
         "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
     ERR=$(mktemp)
-    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+    MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
     RC=$?
     assert_exit "validate exits zero on level '$LVL'" "0" "$RC"
     # Scoped assert (fix wave 5): an unrelated future WARN must not break this test —
@@ -216,7 +274,7 @@ for LVL in none minimal low medium high xhigh ultra; do
     # Consumer-path round-trip (fix wave 5): executors read get-codex, not validate —
     # a known level must round-trip verbatim and keep the `<model>|<level>` shape
     # (exactly one pipe; the resolution snippets split on the LAST '|').
-    VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+    VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null)
     if [ "$VAL" = "gpt-5.5|$LVL" ]; then
         PASS=$((PASS+1)); echo "  PASS: get-codex round-trips level '$LVL'"
     else
@@ -231,7 +289,7 @@ echo "=== Test 7f: get-codex passes an unknown level through (the consumer path)
 TDIR=$(mktemp -d)
 cp "$FIXTURES/unknown-codex-reasoning.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>"$ERR")
+VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>"$ERR")
 RC=$?
 assert_exit "get-codex exits zero on unknown level" "0" "$RC"
 if [ "$VAL" = "gpt-5.5|extreme" ]; then
@@ -249,7 +307,7 @@ TDIR=$(mktemp -d)
 cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
 OUT=$(mktemp)
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>"$ERR"
 RC=$?
 assert_exit "export exits zero despite die-class codex section" "0" "$RC"
 if grep -q -- "codex" "$ERR"; then
@@ -268,7 +326,7 @@ echo "=== Test 7h: get-codex dies on codex section without model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/broken-codex-valid-gemini.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"
 RC=$?
 assert_exit "get-codex exits non-zero" "1" "$RC"
 assert_stderr_contains "names the missing model" "codex.model: required" "$ERR"
@@ -281,11 +339,11 @@ TDIR=$(mktemp -d)
 sed "s/reasoning_level: extreme.*/reasoning_level: 3/" \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "validate exits non-zero on numeric level" "1" "$RC"
 assert_stderr_contains "explains the type requirement" "must be a string" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex >/dev/null 2>/dev/null
 RC=$?
 assert_exit "get-codex dies cleanly too (no raw jq rc=5)" "1" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -297,7 +355,7 @@ TDIR=$(mktemp -d)
 sed 's/reasoning_level: extreme.*/reasoning_level: "a|b"/' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "validate exits non-zero on 'a|b'" "1" "$RC"
 assert_stderr_contains "names reasoning_level charset" "codex.reasoning_level: must start with" "$ERR"
@@ -308,7 +366,7 @@ TDIR=$(mktemp -d)
 sed 's/model: gpt-5.5/model: "gpt 5.5"/' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "validate exits non-zero on 'gpt 5.5'" "1" "$RC"
 assert_stderr_contains "names codex.model charset" "codex.model: must start with" "$ERR"
@@ -318,7 +376,7 @@ echo "=== Test 8: defaults references unknown model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-missing-model.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "names unknown model" "unknown model" "$ERR"
@@ -328,48 +386,52 @@ echo "=== Test 9: defaults.builtin lists gemini without gemini section ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-builtin-gemini-no-section.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "explains the missing section" "but no gemini: section" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
-echo "=== Test 10: runtime.do_plan_default_stop_tokens below 150000 ==="
+echo "=== Test 10: runtime.do_plan_default_stop_tokens is ignored, with a warning ==="
+# do-plan moved to session-relay. A config copied over from claude-mesh keeps the key, and
+# must still validate — `validate` names it so it gets deleted.
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-runtime-do-plan-tokens.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
-assert_exit "exits non-zero" "1" "$RC"
-assert_stderr_contains "names do_plan_default_stop_tokens" "do_plan_default_stop_tokens" "$ERR"
-assert_stderr_contains "mentions 150000 lower bound" "150000" "$ERR"
+assert_exit "a below-floor value no longer fails validate" "0" "$RC"
+assert_stderr_contains "names the ignored key" "do_plan_default_stop_tokens is ignored" "$ERR"
+assert_stderr_contains "points at session-relay" "session-relay" "$ERR"
 rm -rf "$TDIR" "$ERR"
 
 # iter-2 CONCERN-11: load_or_die exits 2 (not 1) when config.yaml is missing.
 echo "=== Test 10b: get-flag returns rc=2 when config.yaml missing ==="
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA=/nonexistent "$LOADER" get-flag do_plan_default_stop_tokens 2>"$ERR"
+NOHOME=$(mktemp -d)
+env -u XDG_CONFIG_HOME HOME="$NOHOME" MESH_CONFIG=/nonexistent/config.yaml "$LOADER" get-flag has_codex 2>"$ERR"
 RC=$?
 assert_exit "get-flag exits rc=2 on missing config" "2" "$RC"
 assert_stderr_contains "names missing config.yaml" "config.yaml not found" "$ERR"
-rm -f "$ERR"
+rm -rf "$ERR" "$NOHOME"
 
-# iter-2 CRITICAL-2: cmd_get_flag must run validate_runtime before reading the typed scalar.
-echo "=== Test 10c: get-flag do_plan_default_stop_tokens enforces ≥150000 floor ==="
+echo "=== Test 10c: get-flag do_plan_default_stop_tokens is gone ==="
 TDIR=$(mktemp -d)
-cp "$FIXTURES/invalid-runtime-do-plan-tokens.yaml" "$TDIR/config.yaml"
+cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag do_plan_default_stop_tokens 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag do_plan_default_stop_tokens 2>"$ERR"
 RC=$?
-assert_exit "get-flag exits rc=1 on below-floor value" "1" "$RC"
-assert_stderr_contains "mentions 150000 lower bound" "150000" "$ERR"
+assert_exit "the removed feature is unknown (rc=1)" "1" "$RC"
+assert_stderr_contains "says unknown feature" "unknown feature" "$ERR"
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r 'has("do_plan_default_stop_tokens")')
+assert_eq_str "get-runtime no longer carries the key" "false" "$GOT"
 rm -rf "$TDIR" "$ERR"
 
 echo "=== Test 11: defaults.models as scalar (not a list) is rejected ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-models-scalar.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on scalar models" "1" "$RC"
 assert_stderr_contains "explains it must be a list" "must be a list" "$ERR"
@@ -379,7 +441,7 @@ echo "=== Test 12: export simple model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/valid-full.yaml" "$TDIR/config.yaml"
 OUT=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >"$OUT" 2>/dev/null
 RC=$?
 assert_exit "export exits zero" "0" "$RC"
 
@@ -411,7 +473,7 @@ echo "=== Test 13: export model with haiku_model override and context_window ===
 TDIR=$(mktemp -d)
 cp "$FIXTURES/valid-full.yaml" "$TDIR/config.yaml"
 OUT=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export ollama/deepseek >"$OUT" 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export ollama/deepseek >"$OUT" 2>/dev/null
 ENV_FILE=$(cat "$OUT"); source "$ENV_FILE"; rm -f "$ENV_FILE"
 [ "$ANTHROPIC_BASE_URL" = "http://127.0.0.1:11434" ] \
   && { PASS=$((PASS+1)); echo "  PASS: ollama base_url"; } \
@@ -435,7 +497,7 @@ echo "=== Test 14: export nonexistent model ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/valid-full.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/nope 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/nope 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero for unknown model" "1" "$RC"
 assert_stderr_contains "names the unknown model" "zai/nope" "$ERR"
@@ -445,7 +507,7 @@ echo "=== Test 15: provider kind invalid value ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-provider-kind.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on invalid kind" "1" "$RC"
 assert_stderr_contains "names unknown value" "unknown value" "$ERR"
@@ -455,7 +517,7 @@ echo "=== Test 16: provider base_url empty ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-provider-empty-base-url.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on empty base_url" "1" "$RC"
 assert_stderr_contains "names missing base_url" "base_url: missing" "$ERR"
@@ -465,7 +527,7 @@ echo "=== Test 17: provider base_url not a URL ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-provider-bad-url.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on bad URL" "1" "$RC"
 assert_stderr_contains "names invalid URL" "invalid URL" "$ERR"
@@ -479,7 +541,7 @@ echo "=== Test 17b: a newline in a label is rejected, like '|' ==="
 TDIR=$(mktemp -d)
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM\\nevil AUTH-FAILED injected"\n    model: glm-5.1\n' > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on a newline in a model label" "1" "$RC"
 assert_stderr_contains "names the newline" "newline" "$ERR"
@@ -488,7 +550,7 @@ rm -rf "$TDIR" "$ERR"
 TDIR=$(mktemp -d)
 printf 'providers:\n  - id: zai\n    label: "Z\\nevil AUTH-FAILED injected"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n' > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on a newline in a provider label" "1" "$RC"
 assert_stderr_contains "names the newline there too" "newline" "$ERR"
@@ -502,7 +564,7 @@ echo "=== Test 18: provider token REPLACE_ME rejected at export ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-token-replace-me.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm 2>"$ERR"
 RC=$?
 assert_exit "export exits non-zero on REPLACE_ME token" "1" "$RC"
 assert_stderr_contains "names the still-REPLACE_ME token" 'still "REPLACE_ME"' "$ERR"
@@ -512,7 +574,7 @@ echo "=== Test 19: provider duplicate id ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-provider-duplicate-id.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on duplicate provider id" "1" "$RC"
 assert_stderr_contains "names duplicate id" "duplicate id" "$ERR"
@@ -522,7 +584,7 @@ echo "=== Test 20: model id with multiple slashes ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-multi-slash.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on multi-slash id" "1" "$RC"
 assert_stderr_contains "explains only one slash allowed" 'only one "/"' "$ERR"
@@ -532,7 +594,7 @@ echo "=== Test 21: model id short part has uppercase ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-uppercase-short.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on uppercase short" "1" "$RC"
 assert_stderr_contains "explains short-name regex" "must match" "$ERR"
@@ -542,7 +604,7 @@ echo "=== Test 22: model id duplicate ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-duplicate.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on duplicate model id" "1" "$RC"
 assert_stderr_contains "names duplicate id" "duplicate id" "$ERR"
@@ -552,7 +614,7 @@ echo "=== Test 23: model.model empty ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-model-empty-model.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on empty model field" "1" "$RC"
 assert_stderr_contains "names required field" "required field" "$ERR"
@@ -562,7 +624,7 @@ echo "=== Test 24: defaults.builtin lists codex without codex section ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-builtin-codex-no-section.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on codex without section" "1" "$RC"
 assert_stderr_contains "explains the missing codex section" "but no codex: section" "$ERR"
@@ -572,7 +634,7 @@ echo "=== Test 25: defaults.builtin unknown value ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-builtin-unknown.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on unknown builtin" "1" "$RC"
 assert_stderr_contains "names unknown value" "unknown value" "$ERR"
@@ -582,7 +644,7 @@ echo "=== Test 26: defaults.code_review.run_mode invalid ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-runmode.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on invalid run_mode" "1" "$RC"
 assert_stderr_contains "names unknown value" "unknown value" "$ERR"
@@ -592,7 +654,7 @@ echo "=== Test 27: runtime.default_run_mode invalid ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-runtime-runmode.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on invalid default_run_mode" "1" "$RC"
 assert_stderr_contains "names unknown value" "unknown value" "$ERR"
@@ -602,7 +664,7 @@ echo "=== Test 28: runtime.timeouts.* zero ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-runtime-timeout-zero.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on zero timeout" "1" "$RC"
 assert_stderr_contains "names positive integer rule" "positive integer" "$ERR"
@@ -612,7 +674,7 @@ echo "=== Test 29: runtime.timeouts.* negative ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-runtime-timeout-negative.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "exits non-zero on negative timeout" "1" "$RC"
 assert_stderr_contains "names positive integer rule" "positive integer" "$ERR"
@@ -627,7 +689,7 @@ echo "=== Test 30: odd model name round-trips verbatim (jq-injection guard, FIX 
 TDIR=$(mktemp -d)
 cp "$FIXTURES/valid-odd-model-name.yaml" "$TDIR/config.yaml"
 OUT=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/odd >"$OUT" 2>/dev/null
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/odd >"$OUT" 2>/dev/null
 RC=$?
 assert_exit "export exits zero on odd model name" "0" "$RC"
 ENV_FILE=$(cat "$OUT"); source "$ENV_FILE"; rm -f "$ENV_FILE"
@@ -646,7 +708,7 @@ PLUGIN_ROOT="$(cd "$TESTS_DIR/../../.." && pwd)"
 TMPD=$(mktemp -d)
 cp "$PLUGIN_ROOT/config.example.yaml" "$TMPD/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TMPD" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TMPD/config.yaml" XDG_STATE_HOME="$TMPD" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "config.example.yaml validates" "0" "$RC"
 [ "$RC" != "0" ] && { echo "    stderr:"; sed 's/^/      /' "$ERR"; }
@@ -668,7 +730,7 @@ MODEL_IDS=$(yq -r '.models[].id' "$TMPD/config.yaml")
 for mid in $MODEL_IDS; do
     OUT=$(mktemp)
     ERRF=$(mktemp)
-    CLAUDE_PLUGIN_DATA="$TMPD" "$LOADER" export "$mid" >"$OUT" 2>"$ERRF"
+    MESH_CONFIG="$TMPD/config.yaml" XDG_STATE_HOME="$TMPD" "$LOADER" export "$mid" >"$OUT" 2>"$ERRF"
     RC=$?
     ENV_FILE=$(cat "$OUT" 2>/dev/null)
     # cmd_export now prints the path to a mode-600 tmpfile, not the exports themselves.
@@ -688,7 +750,7 @@ rm -rf "$TMPD"
 echo "=== Test 33: get-runtime emits max_redispatch from config ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  max_redispatch: 3\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch')
 if [ "$GOT" = "3" ]; then PASS=$((PASS+1)); echo "  PASS: max_redispatch=3"; else FAIL=$((FAIL+1)); echo "  FAIL: max_redispatch (expected 3, got '$GOT')"; fi
 rm -rf "$TDIR"
 
@@ -696,7 +758,7 @@ rm -rf "$TDIR"
 echo "=== Test 34: get-runtime defaults max_redispatch to 1 ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '.max_redispatch')
 if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: default 1"; else FAIL=$((FAIL+1)); echo "  FAIL: default (expected 1, got '$GOT')"; fi
 rm -rf "$TDIR"
 
@@ -705,7 +767,7 @@ echo "=== Test 35: get-runtime rejects max_redispatch=0 ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  max_redispatch: 0\n' > "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime 2>"$ERR"; RC=$?
 assert_exit "exits non-zero" "1" "$RC"
 assert_stderr_contains "names max_redispatch" "max_redispatch" "$ERR"
 rm -rf "$TDIR" "$ERR"
@@ -718,24 +780,24 @@ echo "=== Test 36: dispatch_model charset (reject bad / leading-dash, accept val
 TDIR=$(mktemp -d); ERR=$(mktemp)
 
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "bad model!"\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects whitespace/punct dispatch_model" "1" "$RC"
 assert_stderr_contains "names dispatch_model" "dispatch_model" "$ERR"
 
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "-opus"\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects leading-dash dispatch_model" "1" "$RC"
 
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-fable-5"\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a valid alias/id (internal dashes ok)" "0" "$RC"
 
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "us.anthropic.claude-3-5-sonnet-20241022-v2:0"\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a Bedrock full id (colon ok)" "0" "$RC"
 
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  dispatch_model: "claude-opus-4@20250514"\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a Vertex full id (at-sign ok)" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
@@ -744,7 +806,7 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 37: get-flag dispatch_model returns value ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  dispatch_model: opus\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag dispatch_model)
 if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: dispatch_model (expected opus, got '$GOT')"; fi
 rm -rf "$TDIR"
 
@@ -752,7 +814,7 @@ rm -rf "$TDIR"
 echo "=== Test 38: get-flag dispatch_model empty when absent ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  default_run_mode: background\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag dispatch_model)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag dispatch_model)
 if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: empty when absent"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
 rm -rf "$TDIR"
 
@@ -760,10 +822,10 @@ rm -rf "$TDIR"
 echo "=== Test 39: get-runtime emits dispatch_model ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  dispatch_model: fable\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
 if [ "$GOT" = "fable" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model=fable"; else FAIL=$((FAIL+1)); echo "  FAIL: expected fable, got '$GOT'"; fi
 printf 'runtime:\n  default_run_mode: team\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '.dispatch_model')
 if [ -z "$GOT" ]; then PASS=$((PASS+1)); echo "  PASS: dispatch_model defaults to empty"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty, got '$GOT'"; fi
 rm -rf "$TDIR"
 
@@ -775,9 +837,9 @@ echo "=== Test 40: codex.model with '/' validates and round-trips ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 sed 's|model: gpt-5.5|model: openai/gpt-oss-20b|' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on provider-qualified codex.model" "0" "$RC"
-VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null)
 if [ "$VAL" = "openai/gpt-oss-20b|extreme" ]; then
     PASS=$((PASS+1)); echo "  PASS: get-codex round-trips the slash model"
 else
@@ -785,7 +847,7 @@ else
 fi
 sed 's|model: gpt-5.5|model: "/gpt-oss"|' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "still rejects a leading-slash codex.model" "1" "$RC"
 assert_stderr_contains "names codex.model charset" "codex.model: must start with" "$ERR"
 rm -rf "$TDIR" "$ERR"
@@ -797,20 +859,20 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 41: codex:/gemini: as non-mapping scalars die cleanly ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ncodex: false\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on codex: false" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "codex: must be a mapping" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-codex dies cleanly on codex: false (no raw jq rc=5)" "1" "$RC"
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ngemini: false\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on gemini: false" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "gemini: must be a mapping" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-gemini >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-gemini >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-gemini dies cleanly on gemini: false (no raw jq rc=5)" "1" "$RC"
 # An explicitly EMPTY key (`codex:` → null) keeps the absent semantics: no error.
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\ncodex:\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'codex:' key (null = absent)" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
 
@@ -820,7 +882,7 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 42: empty config.yaml dies without integer-expression noise ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 : > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on empty config" "1" "$RC"
 assert_stderr_contains "names the empty providers section" "providers: section is empty or missing" "$ERR"
 if grep -q -- "integer expression" "$ERR"; then
@@ -838,10 +900,10 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 43: get-runtime emits timeouts with export-parity defaults ==="
 TDIR=$(mktemp -d)
 printf 'runtime:\n  timeouts:\n    global_sec: 7200\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '.timeouts.global_sec')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '.timeouts.global_sec')
 if [ "$GOT" = "7200" ]; then PASS=$((PASS+1)); echo "  PASS: configured global_sec=7200"; else FAIL=$((FAIL+1)); echo "  FAIL: global_sec (expected 7200, got '$GOT')"; fi
 printf 'runtime:\n  default_run_mode: background\n' > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime | jq -r '[.timeouts.single_run_sec, .timeouts.stall_sec, .timeouts.global_sec, .timeouts.max_retries] | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime | jq -r '[.timeouts.single_run_sec, .timeouts.stall_sec, .timeouts.global_sec, .timeouts.max_retries] | join(",")')
 if [ "$GOT" = "1800,600,3600,2" ]; then PASS=$((PASS+1)); echo "  PASS: defaults 1800,600,3600,2"; else FAIL=$((FAIL+1)); echo "  FAIL: timeout defaults (got '$GOT')"; fi
 rm -rf "$TDIR"
 
@@ -852,15 +914,15 @@ rm -rf "$TDIR"
 echo "=== Test 44: export fails on broken providers/models/runtime sections ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 cp "$FIXTURES/invalid-provider-bad-url.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
 assert_exit "export exits 1 on invalid provider base_url" "1" "$RC"
 assert_stderr_contains "names the invalid URL" "invalid URL" "$ERR"
 cp "$FIXTURES/invalid-model-duplicate.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
 assert_exit "export exits 1 on duplicate model id" "1" "$RC"
 assert_stderr_contains "names the duplicate id" "duplicate id" "$ERR"
 cp "$FIXTURES/invalid-runtime-timeout-zero.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" export zai/glm >/dev/null 2>"$ERR"; RC=$?
 assert_exit "export exits 1 on zero runtime timeout" "1" "$RC"
 assert_stderr_contains "names the positive-integer rule" "positive integer" "$ERR"
 rm -rf "$TDIR" "$ERR"
@@ -874,10 +936,10 @@ echo "=== Test 45: reasoning_level: off warns and passes through as a string ===
 TDIR=$(mktemp -d); ERR=$(mktemp)
 sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on unquoted 'off'" "0" "$RC"
 assert_stderr_contains "warns about the unknown level" 'unknown value "off"' "$ERR"
-VAL=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+VAL=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null)
 if [ "$VAL" = "gpt-5.5|off" ]; then
     PASS=$((PASS+1)); echo "  PASS: get-codex passes 'off' through as a string"
 else
@@ -895,13 +957,13 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 46: runtime:/runtime.timeouts as non-mapping scalars die cleanly ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime: false\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on runtime: false" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "runtime: must be a mapping" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-runtime dies cleanly on runtime: false (no raw jq rc=5)" "1" "$RC"
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  timeouts: false\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on runtime.timeouts: false" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "runtime.timeouts: must be a mapping" "$ERR"
 if grep -q -- "Cannot index" "$ERR"; then
@@ -910,14 +972,14 @@ if grep -q -- "Cannot index" "$ERR"; then
 else
     PASS=$((PASS+1)); echo "  PASS: validate stderr free of raw jq indexing noise"
 fi
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-runtime dies cleanly on runtime.timeouts: false (no raw jq rc=5)" "1" "$RC"
 # Explicitly EMPTY keys (`runtime:` / `timeouts:` → null) keep the absent semantics.
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'runtime:' key (null = absent)" "0" "$RC"
 printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\nruntime:\n  timeouts:\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'timeouts:' key (null = absent)" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
 
@@ -932,7 +994,7 @@ TDIR=$(mktemp -d); ERR=$(mktemp)
 BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
 
 { printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on claude: false" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
 if grep -q -- "Cannot index" "$ERR"; then
@@ -943,17 +1005,17 @@ else
 fi
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: opus\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a scalar claude.models" "1" "$RC"
 assert_stderr_contains "explains the list requirement" "claude.models: must be a list" "$ERR"
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - 5\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a non-string catalog entry" "1" "$RC"
 assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models:\n    - "-opus"\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a leading-dash catalog entry" "1" "$RC"
 assert_stderr_contains "names the charset rule" "claude.models\[0\]: must start with" "$ERR"
 
@@ -961,27 +1023,27 @@ assert_stderr_contains "names the charset rule" "claude.models\[0\]: must start 
 # (`models: [opus, claude fable]` is two entries, the second with a space), and an entry
 # with a space would be word-split by the membership globs downstream.
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, "claude fable"]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a catalog entry containing a space" "1" "$RC"
 assert_stderr_contains "names the charset rule for the space" "claude.models\[1\]" "$ERR"
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, opus]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate catalog entry" "1" "$RC"
 assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable, "claude-fable-5", "us.anthropic.claude-3-5-sonnet-20241022-v2:0"]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts aliases and full ids (dashes, dots, colon)" "0" "$RC"
 
 # An explicitly EMPTY key (`claude:` → null) keeps the absent semantics, like codex:.
 { printf '%s\n' "$BASE"; printf 'claude:\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on empty 'claude:' key (null = absent)" "0" "$RC"
 
 # An empty list is legal and simply means "no catalog" (mirrors defaults.*.models).
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero on an empty claude.models list" "0" "$RC"
 
 # A mapping with no models key at all. `.claude.models | type` is "null" here, so this is
@@ -989,7 +1051,7 @@ assert_exit "validate exits zero on an empty claude.models list" "0" "$RC"
 # its `model:` key is a hard error. Pinned by a test so a future maintainer does not
 # "restore" the missing check.
 { printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "treats 'claude: {}' as no catalog, not as an error" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
@@ -1004,35 +1066,35 @@ BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://ap
 CATALOG=$(printf 'claude:\n  models: [opus, fable]\n')
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: opus\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a scalar claude_models" "1" "$RC"
 assert_stderr_contains "explains the list requirement" "claude_models: must be a list" "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, sonnet]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a model absent from the catalog" "1" "$RC"
 assert_stderr_contains "names the unknown model" 'unknown claude model "sonnet"' "$ERR"
 
 # No catalog at all: every entry is "unknown", and the message must point at the catalog.
 { printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects claude_models with no claude.models catalog" "1" "$RC"
 assert_stderr_contains "points at the catalog" "claude.models catalog" "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [codex]\n    claude_models: [opus]\ncodex:\n  model: gpt-5.5\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects claude_models without claude in builtin" "1" "$RC"
 assert_stderr_contains "names the missing builtin entry" 'is missing from defaults.code_review.builtin' "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, opus]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate claude_models entry" "1" "$RC"
 assert_stderr_contains "names the duplicate" 'duplicate model "opus"' "$ERR"
 
 # Element type gate. Without it `jq -r` stringifies the value and the membership test
 # compares that string, so a catalog of ["5","true"] would accept a preset of [5, true].
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: ["5", "true"]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [5, true]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects non-string claude_models entries" "1" "$RC"
 assert_stderr_contains "explains the string requirement" "must be a string" "$ERR"
 
@@ -1040,7 +1102,7 @@ assert_stderr_contains "explains the string requirement" "must be a string" "$ER
 # when there is no catalog, so " $claude_catalog " is "  " and the glob *"  "*
 # MATCHES an empty $cmv — the entry sails through membership with no catalog at all.
 { printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [""]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects an empty claude_models entry (no catalog)" "1" "$RC"
 assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
 
@@ -1050,19 +1112,19 @@ assert_stderr_contains "names it as empty, not as unknown" "empty value" "$ERR"
 # and validated clean (get-defaults then emitted the bogus entry verbatim). The catalog
 # side already rejects the identical string via IDENT_RE (Test 47) — both sides now do.
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: ["opus fable"]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a space-spanning claude_models entry (missing comma)" "1" "$RC"
 assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
 
 # design_review is validated by the same loop.
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  design_review:\n    builtin: [claude]\n    claude_models: [sonnet]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "applies the same rules to design_review" "1" "$RC"
 assert_stderr_contains "names the design_review preset" "defaults.design_review.claude_models" "$ERR"
 
 # Happy path: catalog wider than the presets, presets differing from each other.
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts differing per-preset subsets of a wider catalog" "0" "$RC"
 # The double call is now real: validate_all calls validate_claude directly and
 # validate_defaults calls it again. A `warn` added inside it would print twice with
@@ -1075,7 +1137,7 @@ fi
 
 # Back-compat: claude in builtin with NO claude_models stays valid (fallback = 1 reviewer).
 { printf '%s\n' "$BASE"; printf '%s\n' "$CATALOG"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts builtin claude with no claude_models" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
@@ -1089,38 +1151,38 @@ TDIR=$(mktemp -d); ERR=$(mktemp)
 BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, fable]\n'; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 with a catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
 if [ "$GOT" = "opus,fable," ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models keeps config order"; else FAIL=$((FAIL+1)); echo "  FAIL: list-claude-models (expected 'opus,fable,', got '$GOT')"; fi
 
 { printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 with no section"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
 assert_exit "list-claude-models exits 0 with no catalog" "0" "$RC"
 if [ ! -s "$TDIR/out" ]; then PASS=$((PASS+1)); echo "  PASS: list-claude-models prints nothing with no catalog"; else FAIL=$((FAIL+1)); echo "  FAIL: expected empty output, got '$(cat "$TDIR/out")'"; fi
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: []\n'; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 on an empty list"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
 
 # A mapping with no models key — same "no catalog" semantics as an absent section.
 { printf '%s\n' "$BASE"; printf 'claude: {}\n'; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "0" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=0 for 'claude: {}'"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 0, got '$GOT')"; fi
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-claude-models >"$TDIR/out" 2>"$ERR"; RC=$?
 assert_exit "list-claude-models exits 0 for 'claude: {}'" "0" "$RC"
 
 { printf '%s\n' "$BASE"; printf 'claude: false\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-flag dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-claude-models >/dev/null 2>"$ERR"; RC=$?
 assert_exit "list-claude-models dies cleanly on claude: false" "1" "$RC"
 
 { printf '%s\n' "$BASE"; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag no_such_flag >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag no_such_flag >/dev/null 2>"$ERR"; RC=$?
 assert_exit "unknown get-flag feature still dies" "1" "$RC"
 assert_stderr_contains "lists has_claude_models among valid features" "has_claude_models" "$ERR"
 
@@ -1134,20 +1196,20 @@ TDIR=$(mktemp -d)
 BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n')
 
 { printf '%s\n' "$BASE"; printf 'claude:\n  models: [opus, sonnet, fable]\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    claude_models: [opus, fable]\n  design_review:\n    builtin: [claude]\n    claude_models: [opus]\n'; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
 if [ "$GOT" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$GOT')"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
 if [ "$GOT" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$GOT')"; fi
 
 # Absent key → an empty list that is PRESENT in the object, never a missing key and never
 # null. Tested with has() on purpose: `null | length` is 0 in jq, so a length check would
 # pass even when the field is absent entirely.
 { printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("claude_models")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("claude_models")')
 if [ "$GOT" = "true" ]; then PASS=$((PASS+1)); echo "  PASS: claude_models key always present"; else FAIL=$((FAIL+1)); echo "  FAIL: expected has(claude_models)=true, got '$GOT'"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | type')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | type')
 if [ "$GOT" = "array" ]; then PASS=$((PASS+1)); echo "  PASS: absent claude_models becomes []"; else FAIL=$((FAIL+1)); echo "  FAIL: expected an array, got '$GOT'"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.builtin | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.builtin | join(",")')
 if [ "$GOT" = "claude" ]; then PASS=$((PASS+1)); echo "  PASS: existing get-defaults fields intact"; else FAIL=$((FAIL+1)); echo "  FAIL: builtin (expected 'claude', got '$GOT')"; fi
 
 # The clean-death path. cmd_get_defaults is the only real consumer of the validate_claude
@@ -1158,7 +1220,7 @@ if [ "$GOT" = "claude" ]; then PASS=$((PASS+1)); echo "  PASS: existing get-defa
 # pipeline's rc, not the loader's.
 ERR=$(mktemp)
 { printf '%s\n' "$BASE"; printf 'claude: false\n'; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults dies cleanly on claude: false (no raw jq rc=5)" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "claude: must be a mapping" "$ERR"
 if grep -q -- "Cannot index" "$ERR"; then
@@ -1178,12 +1240,12 @@ rm -rf "$TDIR" "$ERR"
 echo "=== Test 51: config.example.yaml claude catalog round-trip ==="
 TDIR=$(mktemp -d)
 cp "$TESTS_DIR/../../../config.example.yaml" "$TDIR/config.yaml"
-CATALOG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
+CATALOG=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-claude-models | tr '\n' ',')
 if [ "$CATALOG" = "opus,sonnet,fable," ]; then PASS=$((PASS+1)); echo "  PASS: example catalog is opus,sonnet,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: example catalog (expected 'opus,sonnet,fable,', got '$CATALOG')"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_claude_models)
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_claude_models)
 if [ "$GOT" = "1" ]; then PASS=$((PASS+1)); echo "  PASS: has_claude_models=1 for the example"; else FAIL=$((FAIL+1)); echo "  FAIL: has_claude_models (expected 1, got '$GOT')"; fi
-CR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
-DR=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
+CR=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.claude_models | join(",")')
+DR=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review | jq -r '.claude_models | join(",")')
 if [ "$CR" = "opus,fable" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review claude_models=opus,fable"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review claude_models (expected 'opus,fable', got '$CR')"; fi
 if [ "$DR" = "opus" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review claude_models=opus"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review claude_models (expected 'opus', got '$DR')"; fi
 if [ "$CR" != "$DR" ]; then PASS=$((PASS+1)); echo "  PASS: example presets demonstrate differing sets"; else FAIL=$((FAIL+1)); echo "  FAIL: example presets must differ to demonstrate the feature"; fi
@@ -1191,9 +1253,9 @@ if [ "$CR" != "$DR" ]; then PASS=$((PASS+1)); echo "  PASS: example presets demo
 # with no regression coverage anywhere in this suite. Pin both here, on the example: run_mode
 # must stay `background` for code_review and keep defaulting to null for design_review (which
 # has no run_mode field at all), and neither preset's models list may be lost.
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
 if [ "$GOT" = "background,4" ]; then PASS=$((PASS+1)); echo "  PASS: example code_review keeps run_mode=background + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: code_review run_mode/models count (expected 'background,4', got '$GOT')"; fi
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review | jq -r '[(.run_mode|tostring), (.models|length|tostring)] | join(",")')
 if [ "$GOT" = "null,4" ]; then PASS=$((PASS+1)); echo "  PASS: example design_review keeps run_mode=null + 4 models"; else FAIL=$((FAIL+1)); echo "  FAIL: design_review run_mode/models count (expected 'null,4', got '$GOT')"; fi
 rm -rf "$TDIR"
 
@@ -1207,18 +1269,18 @@ TDIR=$(mktemp -d); GODIR=$(mktemp -d); ERR=$(mktemp)
 mkyq_go "$GODIR"
 sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
     "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
-PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+PATH="$GODIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits zero under Go-yq" "0" "$RC"
 assert_stderr_contains "warns about the unknown level, as it does under Python-yq" 'unknown value "off"' "$ERR"
-VAL=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+VAL=$(PATH="$GODIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null)
 if [ "$VAL" = "gpt-5.5|off" ]; then
     PASS=$((PASS+1)); echo "  PASS: get-codex passes 'off' through as a string under Go-yq"
 else
     FAIL=$((FAIL+1)); echo "  FAIL: get-codex printed '$VAL' under Go-yq (expected 'gpt-5.5|off')"
 fi
 # The same document through both flavors must produce the same snapshot, not merely a valid one.
-A=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
-B=$(PATH="$GODIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+A=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime 2>/dev/null)
+B=$(PATH="$GODIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-runtime 2>/dev/null)
 if [ "$A" = "$B" ]; then
     PASS=$((PASS+1)); echo "  PASS: both flavors yield an identical runtime block"
 else
@@ -1236,9 +1298,9 @@ if REAL_GO="$(find_real_go_yq)"; then
     ln -s "$REAL_GO" "$REALDIR/yq"
     sed 's/reasoning_level: extreme.*/reasoning_level: off/' \
         "$FIXTURES/unknown-codex-reasoning.yaml" > "$TDIR/config.yaml"
-    PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    PATH="$REALDIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
     assert_exit "validate exits zero under the REAL Go-yq on this machine" "0" "$RC"
-    VAL=$(PATH="$REALDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null)
+    VAL=$(PATH="$REALDIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null)
     if [ "$VAL" = "gpt-5.5|off" ]; then
         PASS=$((PASS+1)); echo "  PASS: real Go-yq ($("$REAL_GO" --version 2>&1|head -1)) keeps 'off' a string"
     else
@@ -1256,7 +1318,7 @@ echo "=== Test 53: a yq that cannot produce JSON does not get the config blamed 
 TDIR=$(mktemp -d); NJDIR=$(mktemp -d); ERR=$(mktemp)
 mkyq_nojson "$NJDIR"
 cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
-PATH="$NJDIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+PATH="$NJDIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 when yq cannot emit JSON" "1" "$RC"
 assert_stderr_contains "names the toolchain" "yq cannot produce JSON" "$ERR"
 assert_stderr_lacks "and does NOT accuse a healthy config.yaml" "check yaml syntax" "$ERR"
@@ -1276,7 +1338,7 @@ else
     Y11DIR=$(mktemp -d); mkyq_yaml11 "$Y11DIR"
     TDIR=$(mktemp -d); ERR=$(mktemp)
     cp "$FIXTURES/valid-claude-models-level-off.yaml" "$TDIR/config.yaml"
-    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    PATH="$Y11DIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
     assert_exit "validate exits 1 under a YAML-1.1 yq" "1" "$RC"
     assert_stderr_contains "names the resolver" "yq mis-resolves YAML scalars" "$ERR"
     assert_stderr_lacks "and does not tell the user to quote a correct value" \
@@ -1284,7 +1346,7 @@ else
     rm -rf "$TDIR" "$ERR"
     TDIR=$(mktemp -d); ERR=$(mktemp)
     cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
-    PATH="$Y11DIR:$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    PATH="$Y11DIR:$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
     assert_exit "…and the same yq is accepted on a config that yields no booleans" "0" "$RC"
     rm -rf "$TDIR" "$ERR" "$Y11DIR"
 fi
@@ -1296,19 +1358,19 @@ echo "=== Test 55: malformed yaml blames the yaml; empty/comment-only configs un
 TDIR=$(mktemp -d); ERR=$(mktemp); GODIR=$(mktemp -d)
 mkyq_go "$GODIR"
 printf 'providers:\n  - id: zai\n    label: "[unclosed\n' > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 on malformed yaml" "1" "$RC"
 assert_stderr_contains "blames the yaml" "check yaml syntax" "$ERR"
 assert_stderr_lacks "and does not accuse the yq" "yq cannot produce JSON" "$ERR"
 for FLAVOR in python-yq go-yq; do
     case "$FLAVOR" in python-yq) PFX="" ;; go-yq) PFX="$GODIR:" ;; esac
     : > "$TDIR/config.yaml"
-    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    PATH="$PFX$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
     assert_exit "empty config exits 1 ($FLAVOR)" "1" "$RC"
     assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
         "providers: section is empty or missing" "$ERR"
     printf '# only a comment\n' > "$TDIR/config.yaml"
-    PATH="$PFX$PATH" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+    PATH="$PFX$PATH" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
     assert_exit "comment-only config exits 1 ($FLAVOR)" "1" "$RC"
     assert_stderr_contains "…and says providers is empty ($FLAVOR)" \
         "providers: section is empty or missing" "$ERR"
@@ -1327,7 +1389,7 @@ TDIR=$(mktemp -d); ERR=$(mktemp); SHIMDIR=$(mktemp -d); LEAKTMP=$(mktemp -d)
 MKTEMP_REAL="$(command -v mktemp)"   # resolved BEFORE the shim is on PATH, or the shim recurses
 cat > "$SHIMDIR/mktemp" <<SH
 #!/usr/bin/env bash
-for a in "\$@"; do case "\$a" in claude-mesh-yqprobe-*) exit 1 ;; esac; done
+for a in "\$@"; do case "\$a" in mesh-yqprobe-*) exit 1 ;; esac; done
 exec $MKTEMP_REAL "\$@"
 SH
 chmod +x "$SHIMDIR/mktemp"
@@ -1336,7 +1398,7 @@ cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
 # the per-document gate run the probe at all — no fixture carries one, by the design's own
 # measurement.
 printf 'probe_trigger: true\n' >> "$TDIR/config.yaml"
-PATH="$SHIMDIR:$PATH" TMPDIR="$LEAKTMP" CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+PATH="$SHIMDIR:$PATH" TMPDIR="$LEAKTMP" MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate exits 1 when the probe's mktemp fails" "1" "$RC"
 # Without this the emptiness below would be vacuous — an exit BEFORE the snapshot is written
 # also leaves TMPDIR clean, and would pass a test that pins nothing.
@@ -1358,76 +1420,76 @@ echo "=== Test 57: grok: section validation ==="
 TDIR=$(mktemp -d); ERR=$(mktemp)
 
 cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a well-formed grok: section" "0" "$RC"
 
 cp "$FIXTURES/invalid-grok-scalar.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a scalar grok: section" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "grok: must be a mapping" "$ERR"
 assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
 
 cp "$FIXTURES/invalid-grok-models-missing.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a grok: section with no catalog" "1" "$RC"
 assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
 
 cp "$FIXTURES/invalid-grok-models-empty.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects an empty grok catalog" "1" "$RC"
 assert_stderr_contains "says the catalog is required" "grok.models: required when grok: section present" "$ERR"
 
 # The charset is the narrow one. A colon is legal in claude.models and must NOT be here:
 # the value becomes a path component and a watch-runs.sh roster entry.
 cp "$FIXTURES/invalid-grok-model-charset.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a colon in a grok model id" "1" "$RC"
 assert_stderr_contains "names the narrow charset" "grok.models\[1\]" "$ERR"
 assert_stderr_contains "shows which charset applies" "\[A-Za-z0-9._-\]" "$ERR"
 
 { printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
   printf 'grok:\n  models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate grok model" "1" "$RC"
 assert_stderr_contains "names the duplicate" "duplicate model" "$ERR"
 assert_stderr_contains "…and names WHICH id repeats" "grok-4.6" "$ERR"
 
 # Unknown effort passes with a WARN — xAI adds levels without asking this plugin.
 cp "$FIXTURES/unknown-grok-effort.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts an unknown reasoning_effort" "0" "$RC"
 assert_stderr_contains "warns about it" "unknown value \"ludicrous\"" "$ERR"
 
 # No grok: section at all — every existing config on earth.
 cp "$FIXTURES/valid-minimal.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "a config with no grok: section stays valid" "0" "$RC"
-GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+GF=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
 assert_eq_str "has_grok=0 without a section" "0" "$GF"
 
 cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
-GF=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
+GF=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok 2>/dev/null)
 assert_eq_str "has_grok=1 with a section" "1" "$GF"
-LIST=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" list-grok-models 2>/dev/null | tr '\n' ' ')
+LIST=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" list-grok-models 2>/dev/null | tr '\n' ' ')
 assert_eq_str "list-grok-models emits the catalog in config order" "grok-4.6 grok-4.5 " "$LIST"
-EFFORT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)
+EFFORT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok 2>/dev/null)
 assert_eq_str "get-grok returns the effort" "xhigh" "$EFFORT"
 
 # get-grok is a TYPED getter: a malformed section must die here, not return an empty string.
 cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-grok rejects a malformed catalog" "1" "$RC"
 assert_stderr_contains "…and says what the catalog must be" "must be a list of grok model ids" "$ERR"
 # …while the codex getter beside it still answers: a broken grok section must not
 # ground the other engines (the `ultra` incident, 2026-07-10).
-CG=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?
+CG=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-codex 2>/dev/null); RC=$?
 assert_exit "get-codex still works with a broken grok section" "0" "$RC"
 assert_eq_str "…and returns the codex model" "gpt-5.5|" "$CG"
 # has_grok VALIDATES instead of probing (see its case arm), so a MALFORMED section must make
 # it EXIT 1 rather than answer 0 or 1. That rc is the contract preflight-env.sh reads to print
 # an INVALID row instead of a MISSING one, and it is the whole justification for the flag not
 # being a bare `jq -e '.grok'`.
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
 
 # The same must hold for the PRESET read, which every orchestrator and preflight-env.sh runs
@@ -1442,13 +1504,13 @@ assert_exit "has_grok exits 1 on a malformed section" "1" "$RC"
 # did: both get-defaults calls exited 1 and preflight-env.sh printed `config INVALID` with
 # EVERY row SKIPPED. That is no longer the behaviour — the referenced case now degrades grok
 # alone — so read those three blocks together: this one owns the UNREFERENCED half only.
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults still answers with a malformed grok section" "0" "$RC"
 
 # The mirror case: a grok: {} section that NO preset references. `validate` must still reject
 # it — the full path owns the whole config — while the preset read must not even look.
 cp "$FIXTURES/unreferenced-broken-grok.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "validate rejects a catalog-less grok section no preset references" "1" "$RC"
 
 # The REFERENCED case, the other half of the same invariant. `grok` is named by BOTH presets
@@ -1459,17 +1521,17 @@ assert_exit "validate rejects a catalog-less grok section no preset references" 
 # prints INVALID on the grok row rather than a MISSING one.
 GD_OUT=$(mktemp)
 cp "$FIXTURES/broken-grok-referenced.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "get-defaults answers when a REFERENCED grok catalog is broken" "0" "$RC"
 assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…the degradation flagged for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…and the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "…the second preset degrades the same way" "0" "$RC"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
 assert_exit "validate still rejects a referenced broken catalog" "1" "$RC"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$RC"
 
 # The same referenced-broken catalog with the preset entry ALSO malformed — the double typo, and
@@ -1481,7 +1543,7 @@ assert_exit "has_grok still exits 1 on it, so the grok row reads INVALID" "1" "$
 # duplicate rule, so one file exercises two of the four. The healthy-catalog case below proves
 # the rules did not simply go soft.
 cp "$FIXTURES/broken-grok-referenced-bad-preset.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "a broken catalog AND a malformed preset entry still answer" "0" "$RC"
 assert_eq_str "…grok dropped, other engines intact" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…and still flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
@@ -1493,14 +1555,14 @@ assert_stderr_contains "…the charset rule is REPORTED, not silent" "must start
 # without it the second entry is reported by the charset rule AND again by the duplicate rule,
 # the first having reached `seen_gm` on its way past.
 assert_eq_str "…once per entry per preset, not once per rule" "4" "$(grep -c 'grok_models\[' "$ERR")"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
 assert_exit "…and validate still rejects it" "1" "$RC"
 
 # CONTROL: with a HEALTHY catalog the very same malformed preset entry stays FATAL. Without
 # this, deleting the rules outright would satisfy every assertion above.
 sed 's/^  models: grok-4.6$/  models: [grok-4.6]/' \
     "$FIXTURES/broken-grok-referenced-bad-preset.yaml" > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "a healthy catalog keeps the preset rules fatal" "1" "$RC"
 
 # A scalar `grok:` section — the same invariant, one KIND of breakage over. `grok: false` is
@@ -1511,40 +1573,40 @@ assert_exit "a healthy catalog keeps the preset rules fatal" "1" "$RC"
 # does. `validate` stays strict, and no raw jq noise may reach stderr — the reason the gate
 # was unconditional in the first place is that `(.grok.models // [])[]` cannot index a boolean.
 cp "$FIXTURES/scalar-grok-referenced.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "get-defaults answers on a SCALAR grok section a preset references" "0" "$RC"
 assert_eq_str "…with grok dropped from builtin" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…grok_models emptied" "0" "$(jq '.grok_models | length' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…and flagged degraded for default mode" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…the other engines untouched" "opus fable" "$(jq -r '.claude_models | join(" ")' "$GD_OUT" 2>/dev/null)"
 assert_stderr_lacks "no raw jq noise on the preset path" "Cannot index" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "…the preset that never names grok answers too" "0" "$RC"
 assert_eq_str "…and is NOT flagged degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
 assert_exit "validate still rejects a scalar grok section" "1" "$RC"
 assert_stderr_contains "…naming the type it got" "must be a mapping" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok still exits 1 on it" "1" "$RC"
 # The CROSS-PRESET case, the third shape of the same invariant. GROK_CATALOG_BROKEN is ONE
 # variable for the whole run while validate_defaults iterates BOTH presets, so a catalog broken
 # for design_review must not be reported to code_review, which never named grok. The two
 # fixtures above cannot catch this: one has grok in NEITHER preset, the other in BOTH.
 cp "$FIXTURES/broken-grok-one-preset.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "get-defaults answers for the preset that never names grok" "0" "$RC"
 assert_eq_str "…and does NOT flag that preset degraded" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…its builtin is untouched" "claude codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review >"$GD_OUT" 2>"$ERR"; RC=$?
 assert_exit "…while the preset that DOES name grok still answers" "0" "$RC"
 assert_eq_str "…and that one IS flagged degraded" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
 assert_eq_str "…with grok dropped from its builtin" "claude" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
 # The UNREFERENCED fixture must not be flagged: nothing read its catalog, so nothing degraded.
 cp "$FIXTURES/broken-grok-valid-codex.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"
 assert_eq_str "grok_degraded is false when no preset references grok" "false" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
 rm -f "$GD_OUT"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-defaults ignores a grok section no preset references" "0" "$RC"
 
 rm -rf "$TDIR" "$ERR"
@@ -1560,22 +1622,22 @@ BASE=$(printf 'providers:\n  - id: zai\n    label: "Z"\n    base_url: https://ap
 GCAT=$(printf 'grok:\n  models: [grok-4.6, grok-4.5]\n')
 
 cp "$FIXTURES/invalid-defaults-builtin-grok-no-section.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects builtin grok with no grok: section" "1" "$RC"
 assert_stderr_contains "says which section is missing" 'builtin lists "grok" but no grok: section' "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects builtin grok with no grok_models" "1" "$RC"
 assert_stderr_contains "explains the reviewer needs a model" "grok_models is empty" "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects grok_models without grok in builtin" "1" "$RC"
 assert_stderr_contains "names the missing builtin entry" 'missing from defaults.code_review.builtin' "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.7]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a grok_models entry outside the catalog" "1" "$RC"
 assert_stderr_contains "points at the catalog" "grok.models catalog" "$ERR"
 
@@ -1587,24 +1649,24 @@ assert_stderr_contains "points at the catalog" "grok.models catalog" "$ERR"
 # is reported for what it is — and this assertion is what makes the SYNC marker's claim true
 # on the grok side: delete the charset line and the suite goes red here.
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: ["grok-4.6 grok-4.5"]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a space-spanning grok_models entry (missing comma)" "1" "$RC"
 assert_stderr_contains "reports it as a charset violation, not as unknown" 'must start with a letter/digit' "$ERR"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  code_review:\n    builtin: [grok]\n    grok_models: [grok-4.6, grok-4.6]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a duplicate grok_models entry" "1" "$RC"
 
 { printf '%s\n' "$BASE"; printf '%s\n' "$GCAT"; printf 'defaults:\n  design_review:\n    builtin: [grok]\n    grok_models: [grok-4.5]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a well-formed design_review preset" "0" "$RC"
-DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults design_review 2>/dev/null)
+DJ=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults design_review 2>/dev/null)
 GM=$(printf '%s' "$DJ" | jq -r '.grok_models | join(",")')
 assert_eq_str "get-defaults carries grok_models" "grok-4.5" "$GM"
 
 # A preset with no grok at all still emits an ARRAY, never null — both orchestrators iterate it.
 { printf '%s\n' "$BASE"; printf 'defaults:\n  code_review:\n    builtin: [claude]\n'; } > "$TDIR/config.yaml"
-DJ=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review 2>/dev/null)
+DJ=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review 2>/dev/null)
 GT=$(printf '%s' "$DJ" | jq -r '.grok_models | type')
 assert_eq_str "grok_models defaults to an array" "array" "$GT"
 
@@ -1640,7 +1702,7 @@ for CASE in 'claude:\n  models: opus\n' \
             'claude: false\n'; do
     { printf '%s\n' "$BASE"; printf "$CASE"; } > "$TDIR/config.yaml"
     printf -- '--- case: %s\n' "$CASE" >> "$ACTUAL"
-    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>> "$ACTUAL"
+    MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>> "$ACTUAL"
 done
 # "the two blobs differ" is not actionable — print the diff, or the next maintainer has to
 # reconstruct the nine cases by hand before they can see WHICH message moved.
@@ -1670,34 +1732,34 @@ TDIR=$(mktemp -d); ERR=$(mktemp)
 ME_BASE='providers:\n  - id: zai\n    label: "Z"\n    base_url: https://api.z.ai/api/anthropic\n    token: "tkn"\nmodels:\n  - id: zai/glm\n    label: "GLM"\n    model: glm-5.1\n'
 
 cp "$FIXTURES/valid-grok-model-efforts.yaml" "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts a well-formed model_efforts table" "0" "$RC"
 assert_stderr_lacks "…silently, its levels being known ones" "unknown value" "$ERR"
 
 assert_eq_str "get-grok <model> reads the table" \
-    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+    "xhigh" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
 assert_eq_str "…per model, not one value handed to every model" \
-    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+    "high" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
 assert_eq_str "a model absent from the table falls back to the section default" \
-    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok dks-ultra 2>/dev/null)"
+    "max" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok dks-ultra 2>/dev/null)"
 # The no-argument contract must not move: grok-exec passes "$MODEL", which is legitimately
 # empty on a direct call that names no model, and that call has to behave as it did before
 # this key existed.
 assert_eq_str "get-grok with no argument still prints the section default" \
-    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok 2>/dev/null)"
+    "max" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok 2>/dev/null)"
 assert_eq_str "…and an empty argument is that same case, not a lookup of the empty id" \
-    "max" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok "" 2>/dev/null)"
+    "max" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok "" 2>/dev/null)"
 
 # A section carrying no table at all: the argument is accepted and changes nothing.
 cp "$FIXTURES/valid-grok.yaml" "$TDIR/config.yaml"
 assert_eq_str "get-grok <model> falls back when the section has no table" \
-    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+    "xhigh" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
 
 # An entry for a model outside the catalog is a HARD error, the twin of the rule that every
 # defaults.<preset>.grok_models entry must be a catalog member. A silent no-op is the failure
 # this key exists to prevent: the user believes that model runs at the level they wrote.
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects an entry for a model outside the catalog" "1" "$RC"
 assert_stderr_contains "names the offending key" "grok-4.7" "$ERR"
 assert_stderr_contains "…and says which list it must belong to" "grok.models" "$ERR"
@@ -1710,13 +1772,13 @@ assert_stderr_contains "…and says which list it must belong to" "grok.models" 
 #
 # This is NOT the `ultra` incident returning. That was about a broken grok section GROUNDING the
 # environment; here rc=1 is what both orchestrators already handle by degrading grok ALONE and
-# printing the validator's message (commands/mesh-review.md Step 1), and what makes preflight
+# printing the validator's message (mesh-review/commands/mesh-review.md Step 1), and what makes preflight
 # print INVALID on the grok row rather than MISSING. The unconditional type gate at the top of
 # validate_defaults is untouched, so an UNREFERENCED broken section still grounds nothing.
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-flag has_grok >/dev/null 2>"$ERR"; RC=$?
 assert_exit "has_grok exits 1 on a broken model_efforts table" "1" "$RC"
 assert_stderr_contains "…with the validator's own message" "not in grok.models" "$ERR"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 >/dev/null 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.6 >/dev/null 2>"$ERR"; RC=$?
 assert_exit "get-grok fails on it too, so a direct grok-exec call STOPs" "1" "$RC"
 
 # A preset that REFERENCES grok with a broken table must degrade grok alone and say so — the
@@ -1725,7 +1787,7 @@ assert_exit "get-grok fails on it too, so a direct grok-exec call STOPs" "1" "$R
 { printf '%b' "$ME_BASE"
   printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.7: max\n'
   printf 'defaults:\n  code_review:\n    builtin: [claude, grok]\n    grok_models: [grok-4.6]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$TDIR/gd.json" 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$TDIR/gd.json" 2>"$ERR"; RC=$?
 assert_exit "get-defaults still answers when a preset names grok and the table is broken" "0" "$RC"
 assert_eq_str "…flagged degraded" "true" "$(jq -r '.grok_degraded' "$TDIR/gd.json" 2>/dev/null)"
 assert_eq_str "…grok dropped from builtin" "claude" "$(jq -r '.builtin | join(" ")' "$TDIR/gd.json" 2>/dev/null)"
@@ -1733,13 +1795,13 @@ assert_eq_str "…and its model list emptied" "0" "$(jq '.grok_models | length' 
 rm -f "$TDIR/gd.json"
 
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts: [xhigh]\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a model_efforts that is not a mapping" "1" "$RC"
 assert_stderr_contains "explains the mapping requirement" "grok.model_efforts: must be a mapping" "$ERR"
 assert_stderr_lacks "no raw jq indexing noise" "Cannot index" "$ERR"
 
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: 3\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "rejects a non-string effort value" "1" "$RC"
 assert_stderr_contains "names the model whose value is wrong" "grok-4.6" "$ERR"
 assert_stderr_contains "…and the type it got" "got number" "$ERR"
@@ -1747,28 +1809,28 @@ assert_stderr_contains "…and the type it got" "got number" "$ERR"
 # Unknown levels WARN and pass, exactly as reasoning_effort does — xAI adds levels with new
 # models and the CLI is the final validator. Never an enum.
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  model_efforts:\n    grok-4.6: "ludicrous"\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts an unknown per-model level" "0" "$RC"
 assert_stderr_contains "…warning about it and naming the model" "grok.model_efforts" "$ERR"
 assert_stderr_contains "…and quoting the value" "ludicrous" "$ERR"
 assert_eq_str "…and passes it through to the CLI" \
-    "ludicrous" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+    "ludicrous" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
 
 # An empty value means "unset", the reasoning_effort semantics: a user who comments a level out
 # and leaves the key behind means "let the section default decide", not "pass --effort ''".
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6]\n  reasoning_effort: high\n  model_efforts:\n    grok-4.6: ""\n'; } > "$TDIR/config.yaml"
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"; RC=$?
 assert_exit "accepts an empty per-model value" "0" "$RC"
 assert_eq_str "…and treats it as unset, falling back to the section default" \
-    "high" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+    "high" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
 
 # The table alone, with no section default: a model outside it resolves to nothing at all, and
 # grok-exec then passes no --effort and lets ~/.grok/config.toml decide.
 { printf '%b' "$ME_BASE"; printf 'grok:\n  models: [grok-4.6, grok-4.5]\n  model_efforts:\n    grok-4.6: xhigh\n'; } > "$TDIR/config.yaml"
 assert_eq_str "the table works without a section default" \
-    "xhigh" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
+    "xhigh" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.6 2>/dev/null)"
 assert_eq_str "…and an unlisted model resolves to nothing, so no --effort is passed" \
-    "" "$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
+    "" "$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-grok grok-4.5 2>/dev/null)"
 
 rm -rf "$TDIR" "$ERR"
 
@@ -1783,7 +1845,7 @@ echo "=== Test 61: broken grok catalog + a preset error degrades, never grounds 
 for FX in broken-grok-preset-no-models broken-grok-preset-orphan-models; do
     TDIR=$(mktemp -d); ERR=$(mktemp); GD_OUT=$(mktemp)
     cp "$FIXTURES/$FX.yaml" "$TDIR/config.yaml"
-    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
+    MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >"$GD_OUT" 2>"$ERR"; RC=$?
     assert_exit "$FX: get-defaults answers instead of dying" "0" "$RC"
     assert_eq_str "$FX: codex survives" "codex" "$(jq -r '.builtin | join(" ")' "$GD_OUT" 2>/dev/null)"
     assert_eq_str "$FX: degradation flagged" "true" "$(jq -r '.grok_degraded' "$GD_OUT" 2>/dev/null)"
@@ -1797,7 +1859,7 @@ for FX in broken-grok-preset-no-models broken-grok-preset-orphan-models; do
     assert_stderr_contains "$FX: the preset error is still reported" "NOT fatal for that preset" "$ERR"
     # And the strict path is untouched — validate_grok runs before validate_defaults in
     # validate_all and dies there, so the gate above is unreachable from `validate`.
-    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
+    MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate >/dev/null 2>"$ERR"; RC=$?
     assert_exit "$FX: validate still rejects the file" "1" "$RC"
     rm -f "$ERR" "$GD_OUT"; rm -rf "$TDIR"
 done
@@ -1814,7 +1876,7 @@ for PAIR in "builtin: [codex, grok]|grok_models is empty" "builtin: [codex]
       printf 'codex:\n  model: gpt-5.5\n'
       printf 'grok:\n  models: [grok-4.6]\n'
       printf 'defaults:\n  code_review:\n    %s\n' "$PRESET"; } > "$TDIR/config.yaml"
-    CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
+    MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review >/dev/null 2>"$ERR"; RC=$?
     assert_exit "valid catalog: the preset error is still fatal" "1" "$RC"
     assert_stderr_contains "…and says which rule" "$NEEDLE" "$ERR"
     rm -f "$ERR"; rm -rf "$TDIR"
@@ -1830,7 +1892,7 @@ TDIR=$(mktemp -d)
 printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [native]\n' >> "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "accepts builtin native with no native_models" "0" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -1839,7 +1901,7 @@ echo "=== Test: native_models without native in builtin is invalid ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-native-models-no-native.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "rejects native_models without native" "1" "$RC"
 assert_stderr_contains "names the missing builtin entry" 'is missing from defaults.code_review.builtin' "$ERR"
@@ -1849,7 +1911,7 @@ echo "=== Test: native_models charset rejects a slash ==="
 TDIR=$(mktemp -d)
 cp "$FIXTURES/invalid-defaults-native-models-charset.yaml" "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "rejects slashed native_models entry" "1" "$RC"
 assert_stderr_contains "names the charset" '[A-Za-z0-9._-]' "$ERR"
@@ -1860,7 +1922,7 @@ TDIR=$(mktemp -d)
 printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [native]\n    native_models: ["opus@bedrock"]\n' >> "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "rejects @ in native_models" "1" "$RC"
 rm -rf "$TDIR" "$ERR"
@@ -1871,7 +1933,7 @@ printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'claude:\n  models: [opus]\n' >> "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [native]\n    claude_models: [opus]\n' >> "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "native does not stand in for claude in claude_models pairing" "1" "$RC"
 assert_stderr_contains "still wants claude in builtin" '"claude" is missing from defaults.code_review.builtin' "$ERR"
@@ -1881,13 +1943,13 @@ echo "=== Test: get-defaults emits native_models ==="
 TDIR=$(mktemp -d)
 printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [native]\n    native_models: [grok-4.6, glm-5-3]\n' >> "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | join(",")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | join(",")')
 assert_eq_str "native_models list" "grok-4.6,glm-5-3" "$GOT"
 printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [claude]\n' >> "$TDIR/config.yaml"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("native_models")')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r 'has("native_models")')
 assert_eq_str "native_models key always present" "true" "$GOT"
-GOT=$(CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | type')
+GOT=$(MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" get-defaults code_review | jq -r '.native_models | type')
 assert_eq_str "absent native_models becomes []" "array" "$GOT"
 rm -rf "$TDIR"
 
@@ -1897,7 +1959,7 @@ printf '%s\n' "$BASE" > "$TDIR/config.yaml"
 printf 'claude:\n  models: [opus]\ncodex:\n  model: gpt-5.5\n' >> "$TDIR/config.yaml"
 printf 'defaults:\n  code_review:\n    builtin: [claude, codex]\n    claude_models: [opus]\n' >> "$TDIR/config.yaml"
 ERR=$(mktemp)
-CLAUDE_PLUGIN_DATA="$TDIR" "$LOADER" validate 2>"$ERR"
+MESH_CONFIG="$TDIR/config.yaml" XDG_STATE_HOME="$TDIR" "$LOADER" validate 2>"$ERR"
 RC=$?
 assert_exit "old preset without native stays valid" "0" "$RC"
 rm -rf "$TDIR" "$ERR"

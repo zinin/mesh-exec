@@ -25,11 +25,11 @@ ERRF="$(mktemp)"
 # come from the loader, and the deadline is --since + global_sec + 300. Against a developer
 # config with `global_sec: 600` — a perfectly valid value — every SINCE_OLD test below lands
 # past the deadline and reports DEADLINE instead of its own verdict. Point the loader at a
-# fixture (same CLAUDE_PLUGIN_DATA trick as test-config-loader.sh) so the suite tests the
+# fixture (same MESH_CONFIG trick as test-config-loader.sh) so the suite tests the
 # script rather than whatever is in ~/.claude.
 CFGDIR="$(mktemp -d)"
 cp "$TESTS_DIR/fixtures/valid-minimal.yaml" "$CFGDIR/config.yaml"
-export CLAUDE_PLUGIN_DATA="$CFGDIR"
+export MESH_CONFIG="$CFGDIR/config.yaml"
 trap 'rm -f "$ERRF"; rm -rf "$CFGDIR"' EXIT
 
 assert_eq() {
@@ -712,6 +712,14 @@ wd_log "$a" 0; printf 'findings\n' > "$a/output.txt"
 run --since "$SINCE_OK" --stall-sec 600 --once --data-dir "$TDIR" claude/opus
 assert_eq "reason ALL_DONE" "ALL_DONE" "$REASON"
 assert_match "claude row is DONE" "DONE" "$(row claude/opus)"
+rm -rf "$TDIR"
+
+echo ""
+echo "Test 43: no state dir yet — the first review on a fresh machine"
+TDIR="$(mktemp -d)"
+run --once --since "$SINCE_OK" --stall-sec 600 --data-dir "$TDIR/never-created" codex
+assert_eq "absent state dir: rc 0" "0" "$RC"
+assert_match "absent state dir: a snapshot, not a death" "SNAPSHOT" "$OUT"
 rm -rf "$TDIR"
 
 echo ""

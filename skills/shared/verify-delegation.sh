@@ -17,7 +17,7 @@
 #     since-epoch only run dirs NAMED at/after this unix time are considered — the same
 #                 window watch-runs.sh applies, and creation time rather than mtime
 #                 (the orchestrator stamps this just before dispatch)
-#     data-dir    optional; defaults to config-loader resolve_plugin_data()
+#     data-dir    optional; defaults to `config-loader.sh data-dir` (~/.local/state/mesh)
 #
 # ext-claude and grok runs are judged on NT = the maximum num_turns across the SUCCESSFUL
 # result events of raw.jsonl (a stream can carry several: a background subagent splits it into
@@ -84,12 +84,11 @@ find / -maxdepth 0 -printf '' >/dev/null 2>&1 || {
 }
 
 resolve_plugin_data() {
-    if [ -n "${CLAUDE_PLUGIN_DATA:-}" ]; then printf '%s\n' "$CLAUDE_PLUGIN_DATA"; return; fi
+    # One source of truth for where runs live: the loader's data-dir. The XDG default is the
+    # fallback for a loader that cannot start, so a broken install still yields a real path.
     local d
-    for d in "$HOME"/.claude/plugins/data/claude-mesh-*; do
-        [ -d "$d" ] && [ -f "$d/config.yaml" ] && { printf '%s\n' "$d"; return; }
-    done
-    printf '%s\n' "$HOME/.claude/plugins/data/claude-mesh-zinin"
+    d="$(bash "$(cd "$(dirname "$0")" && pwd)/config-loader.sh" data-dir 2>/dev/null)" || d=""
+    printf '%s\n' "${d:-${XDG_STATE_HOME:-$HOME/.local/state}/mesh}"
 }
 
 # Run identity. CLAUDE_CODE_SESSION_ID is exported into every Bash tool call and inherited
@@ -190,7 +189,7 @@ case "$ENGINE" in
             # value becomes a path component. Unlike grok, a config-sourced model CAN fail it:
             # claude.models is validated with the wider IDENT_RE ([A-Za-z0-9._:@-]), because its
             # original role is a Task `model:` value on Claude Code, where it is never a path.
-            # skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
+            # mesh-review/skills/claude-code-review/SKILL.md rejects such an alias in its own preflight,
             # before a run dir exists, so one reaching here means that gate was bypassed. Beyond
             # that, this script is also a CLI entry point and BOTH
             # orchestrators TEMPLATE the call, so the spelling that actually arrives wrong is

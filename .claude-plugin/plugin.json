@@ -1,14 +1,14 @@
 {
-  "name": "claude-mesh",
+  "name": "mesh-exec",
   "version": "0.15.0",
-  "displayName": "Claude Mesh",
-  "description": "Multi-model code review, alt-Claude execution, session helpers",
+  "displayName": "Mesh Exec",
+  "description": "Run a prompt through another model's CLI — Codex, Gemini, Grok, Claude Code, or alt-provider models via claude -p — with logging, a watchdog and run directories",
   "author": {
     "name": "Alexander V. Zinin",
     "email": "azinin@gmail.com",
     "url": "https://github.com/zinin"
   },
-  "repository": "https://github.com/zinin/claude-mesh",
+  "repository": "https://github.com/zinin/mesh-exec",
   "license": "MIT",
-  "keywords": ["claude-code", "code-review", "multi-model", "external-review"]
+  "keywords": ["agent-skills", "multi-model", "codex", "gemini", "grok", "claude-code", "delegation"]
 }

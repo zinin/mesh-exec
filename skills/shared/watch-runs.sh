@@ -122,7 +122,10 @@ if [ -z "$DATA_DIR" ]; then
     [ -x "$LOADER" ] || die "config-loader.sh not found beside watch-runs.sh — pass --data-dir"
     DATA_DIR="$("$LOADER" data-dir 2>/dev/null)"
 fi
-[ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ] || die "data dir not resolved or missing: '$DATA_DIR'"
+[ -n "$DATA_DIR" ] || die "data dir not resolved"
+# The XDG state dir appears with the first exec run. A watcher launched right after dispatch on a
+# machine that never ran one must watch an empty tree (rows RUN, then MISSING), not die.
+mkdir -p "$DATA_DIR" 2>/dev/null; [ -d "$DATA_DIR" ] || die "data dir missing and cannot be created: '$DATA_DIR'"
 
 # One loader call serves both timeouts below — the two keys live in the same JSON document, and
 # get-runtime re-reads and re-validates config.yaml on every invocation.
